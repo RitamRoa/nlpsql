@@ -1,0 +1,6 @@
+*.gguf
+/SmolLM2-135M-text-to-sql.Q8_0.gguf
+/venv/
+/.venv/
+__pycache__/
+*.py[cod]

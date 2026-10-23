@@ -1,80 +1,17 @@
 import json
 import os
-import sqlite3
-import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from llama_cpp import Llama
+
+from core.adapters.sqlite import SQLiteAdapter
+from core.generator import SQLGenerator
+from core.pipeline import Pipeline
 
 # ---------------------------------------------------------
-# 1. Database Setup (In-Memory SQLite with Sample Data)
+# Seed SQL Schema & Sample Data
 # ---------------------------------------------------------
-def init_db():
-    conn = sqlite3.connect(":memory:", check_same_thread=False)
-    cursor = conn.cursor()
-    
-    # Create tables
-    cursor.execute("""
-    CREATE TABLE employees (
-        id INTEGER PRIMARY KEY,
-        name TEXT,
-        department TEXT,
-        salary INTEGER,
-        hire_date TEXT
-    );
-    """)
-    
-    cursor.execute("""
-    CREATE TABLE departments (
-        id INTEGER PRIMARY KEY,
-        name TEXT,
-        manager_id INTEGER
-    );
-    """)
-    
-    cursor.execute("""
-    CREATE TABLE sales (
-        id INTEGER PRIMARY KEY,
-        employee_id INTEGER,
-        amount INTEGER,
-        sale_date TEXT,
-        FOREIGN KEY (employee_id) REFERENCES employees(id)
-    );
-    """)
-    
-    # Populate data
-    employees = [
-        (1, 'Alice Smith', 'Sales', 75000, '2023-01-15'),
-        (2, 'Bob Jones', 'Engineering', 90000, '2022-06-20'),
-        (3, 'Charlie Brown', 'Sales', 60000, '2024-03-10'),
-        (4, 'Diana Prince', 'Engineering', 110000, '2021-11-05'),
-        (5, 'Evan Wright', 'Marketing', 65000, '2023-08-25')
-    ]
-    cursor.executemany("INSERT INTO employees VALUES (?,?,?,?,?)", employees)
-    
-    departments = [
-        (10, 'Sales', 1),
-        (20, 'Engineering', 4),
-        (30, 'Marketing', 5)
-    ]
-    cursor.executemany("INSERT INTO departments VALUES (?,?,?)", departments)
-    
-    sales = [
-        (101, 1, 1500, '2024-01-10'),
-        (102, 3, 800, '2024-01-15'),
-        (103, 1, 2200, '2024-02-05'),
-        (104, 5, 1200, '2024-02-12'),
-        (105, 3, 1600, '2024-03-01'),
-        (106, 1, 3000, '2024-03-15'),
-        (107, 2, 0, '2024-03-20') # Bob had no sales
-    ]
-    cursor.executemany("INSERT INTO sales VALUES (?,?,?,?)", sales)
-    
-    conn.commit()
-    return conn
-
-# Database schema description to pass to LLM
-SCHEMA_DESCRIPTION = """CREATE TABLE employees (
+SEED_SQL = """
+CREATE TABLE employees (
     id INTEGER PRIMARY KEY,
     name TEXT,
     department TEXT,
@@ -94,29 +31,33 @@ CREATE TABLE sales (
     amount INTEGER,
     sale_date TEXT,
     FOREIGN KEY (employee_id) REFERENCES employees(id)
-);"""
+);
 
-# ---------------------------------------------------------
-# 2. LLM Initialization (llama-cpp-python)
-# ---------------------------------------------------------
-MODEL_PATH = "SmolLM2-135M-text-to-sql.Q8_0.gguf"
-if not os.path.exists(MODEL_PATH):
-    raise FileNotFoundError(f"Model file not found: {MODEL_PATH}")
+INSERT INTO employees VALUES (1, 'Alice Smith', 'Sales', 75000, '2023-01-15');
+INSERT INTO employees VALUES (2, 'Bob Jones', 'Engineering', 90000, '2022-06-20');
+INSERT INTO employees VALUES (3, 'Charlie Brown', 'Sales', 60000, '2024-03-10');
+INSERT INTO employees VALUES (4, 'Diana Prince', 'Engineering', 110000, '2021-11-05');
+INSERT INTO employees VALUES (5, 'Evan Wright', 'Marketing', 65000, '2023-08-25');
 
-print("Loading GGUF model...")
-# CPU execution since user requested fast CPU start
-llm = Llama(
-    model_path=MODEL_PATH,
-    n_ctx=1024,
-    n_threads=6, # Use 6 threads for fast CPU inference
-    verbose=False
-)
-print("Model loaded successfully.")
+INSERT INTO departments VALUES (10, 'Sales', 1);
+INSERT INTO departments VALUES (20, 'Engineering', 4);
+INSERT INTO departments VALUES (30, 'Marketing', 5);
 
-# ---------------------------------------------------------
-# 3. HTTP Server and API Handlers
-# ---------------------------------------------------------
-conn = init_db()
+INSERT INTO sales VALUES (101, 1, 1500, '2024-01-10');
+INSERT INTO sales VALUES (102, 3, 800, '2024-01-15');
+INSERT INTO sales VALUES (103, 1, 2200, '2024-02-05');
+INSERT INTO sales VALUES (104, 5, 1200, '2024-02-12');
+INSERT INTO sales VALUES (105, 3, 1600, '2024-03-01');
+INSERT INTO sales VALUES (106, 1, 3000, '2024-03-15');
+INSERT INTO sales VALUES (107, 2, 0, '2024-03-20');
+"""
+
+MODEL_PATH = os.environ.get("MODEL_PATH", "SmolLM2-135M-text-to-sql.Q8_0.gguf")
+
+adapter = SQLiteAdapter(seed_sql=SEED_SQL)
+generator = SQLGenerator(model_path=MODEL_PATH)
+pipeline = Pipeline(adapter=adapter, generator=generator)
+
 
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="en">
@@ -680,75 +621,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except Exception:
                 self.send_error_response("Invalid JSON")
                 return
-            
+
             prompt = params.get("prompt", "")
             if not prompt:
                 self.send_error_response("Missing 'prompt' parameter")
                 return
 
             print(f"\nUser Prompt: {prompt}")
-            
-            # Format standard chat template for SmolLM2 text-to-sql
-            chat_prompt = (
-                "<|im_start|>system\n"
-                "You are a helpful assistant who answers questions about database tables by responding with SQL queries.<|im_end|>\n"
-                "<|im_start|>user\n"
-                "Given the following database schema:\n"
-                f"{SCHEMA_DESCRIPTION}\n\n"
-                "Answer the following question with a SQL query:\n"
-                f"{prompt}<|im_end|>\n"
-                "<|im_start|>assistant\n"
-            )
-            
-            # Start LLM Generation timing
-            t0 = time.time()
-            output = llm(
-                chat_prompt,
-                max_tokens=150,
-                stop=["<|im_end|>", ";", "\n\n"],
-                temperature=0.0, # Greedy search for precise SQL structure
-            )
-            t1 = time.time()
-            inference_time = t1 - t0
-            
-            generated_text = output["choices"][0]["text"].strip()
-            print(f"Generated text: {generated_text}")
-            
-            # Extract SQL query (clean up common model formatting)
-            sql_query = clean_sql(generated_text)
-            print(f"Cleaned SQL Query: {sql_query}")
-            
-            # Run query in SQLite
-            db_error = None
-            rows = []
-            columns = []
-            q_time = 0.0
-            
-            if sql_query:
-                t_q0 = time.time()
-                try:
-                    cursor = conn.cursor()
-                    cursor.execute(sql_query)
-                    rows = cursor.fetchall()
-                    if cursor.description:
-                        columns = [desc[0] for desc in cursor.description]
-                except Exception as e:
-                    db_error = str(e)
-                t_q1 = time.time()
-                q_time = t_q1 - t_q0
-            else:
-                db_error = "Could not parse SQL query from model output."
 
-            # Send response
+            out = pipeline.ask(prompt)
+
+            inference_time = sum(
+                v for k, v in out.timings.items() if k.startswith("generate")
+            )
+            query_time = sum(
+                v for k, v in out.timings.items() if k.startswith("execute")
+            )
+
             response_data = {
-                "sql": sql_query,
-                "rows": rows,
-                "columns": columns,
-                "error": db_error,
+                "sql": out.sql,
+                "columns": out.result.columns if out.result else [],
+                "rows": out.result.rows if out.result else [],
+                "truncated": out.result.truncated if out.result else False,
+                "error": out.error,
+                "attempts": out.attempts,
+                "timings": out.timings,
                 "inference_time": inference_time,
-                "query_time": q_time
+                "query_time": query_time,
             }
-            
+
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -763,27 +664,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps({"error": msg}).encode("utf-8"))
 
-def clean_sql(text):
-    # Remove markdown code blocks if the model wrapped it
-    text = text.replace("```sql", "").replace("```", "")
-    # Find SELECT statements or basic query indicators
-    # Since SmolLM2-135M SQL is usually directly written, clean basic whitespaces
-    text = text.strip()
-    # Add back semicolon if missing (helps with SQLite but not required)
-    if text and not text.endswith(";"):
-        text += ";"
-    return text
 
-def run_server():
-    server_address = ("", 8000)
+def run_server(port: int = 8000):
+    server_address = ("", port)
     httpd = HTTPServer(server_address, DashboardHandler)
-    print("Dashboard listening on http://localhost:8000")
+    print(f"Dashboard listening on http://localhost:{port}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\nStopping server...")
-    finally:
-        conn.close()
+
 
 if __name__ == "__main__":
     run_server()

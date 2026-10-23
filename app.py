@@ -4,6 +4,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from core.adapters.sqlite import SQLiteAdapter
+from core.adapters.duckdb import DuckDBAdapter
 from core.generator import SQLGenerator
 from core.pipeline import Pipeline
 
@@ -53,8 +54,13 @@ INSERT INTO sales VALUES (107, 2, 0, '2024-03-20');
 """
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "SmolLM2-135M-text-to-sql.Q8_0.gguf")
+DB_ENGINE = os.environ.get("DB_ENGINE", "sqlite").lower()
 
-adapter = SQLiteAdapter(seed_sql=SEED_SQL)
+if DB_ENGINE == "duckdb":
+    adapter = DuckDBAdapter(seed_sql=SEED_SQL)
+else:
+    adapter = SQLiteAdapter(seed_sql=SEED_SQL)
+
 generator = SQLGenerator(model_path=MODEL_PATH)
 pipeline = Pipeline(adapter=adapter, generator=generator)
 

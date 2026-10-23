@@ -1,6 +1,7 @@
 # core.adapters package
 from .base import Column, Table, Schema, Result, ExecutionError, DBAdapter
 from .sqlite import SQLiteAdapter
+from .duckdb import DuckDBAdapter
 
 __all__ = [
     "Column",
@@ -10,4 +11,5 @@ __all__ = [
     "ExecutionError",
     "DBAdapter",
     "SQLiteAdapter",
+    "DuckDBAdapter",
 ]

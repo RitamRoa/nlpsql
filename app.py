@@ -7,6 +7,7 @@ from core.adapters.sqlite import SQLiteAdapter
 from core.adapters.duckdb import DuckDBAdapter
 from core.generator import SQLGenerator
 from core.pipeline import Pipeline
+from core.retriever import SchemaRetriever
 
 # ---------------------------------------------------------
 # Seed SQL Schema & Sample Data
@@ -62,7 +63,8 @@ else:
     adapter = SQLiteAdapter(seed_sql=SEED_SQL)
 
 generator = SQLGenerator(model_path=MODEL_PATH)
-pipeline = Pipeline(adapter=adapter, generator=generator)
+retriever = SchemaRetriever()
+pipeline = Pipeline(adapter=adapter, generator=generator, retriever=retriever)
 
 
 HTML_PAGE = """<!DOCTYPE html>

@@ -3,6 +3,9 @@ from dataclasses import dataclass, field
 from .adapters.base import Result, ExecutionError, Schema
 from .validator import validate, ValidationError
 from .retriever import BaseRetriever
+from .knowledge import DomainKnowledgeEngine, KnowledgeContext
+from .agents.classifier import QueryClassifier, QueryClassification
+from .agents.critic import SemanticCritic
 
 
 def schema_to_ddl(schema: Schema) -> str:
@@ -22,6 +25,8 @@ class PipelineResult:
     attempts: int = 0
     timings: dict = field(default_factory=dict)
     retrieved_schema: Schema | None = None
+    classification: QueryClassification | None = None
+    knowledge_context: KnowledgeContext | None = None
 
 
 class Pipeline:
@@ -30,17 +35,24 @@ class Pipeline:
         adapter,
         generator,
         retriever: BaseRetriever | None = None,
+        knowledge_engine: DomainKnowledgeEngine | None = None,
+        classifier: QueryClassifier | None = None,
+        critic: SemanticCritic | None = None,
         max_repairs: int = 1,
     ):
         self.adapter = adapter
         self.generator = generator
         self.retriever = retriever
+        self.knowledge_engine = knowledge_engine
+        self.classifier = classifier or QueryClassifier()
+        self.critic = critic or SemanticCritic()
         self.max_repairs = max_repairs
 
     def ask(self, question: str) -> PipelineResult:
         out = PipelineResult(question)
         full_schema = self.adapter.get_schema()
 
+        # 1. Retrieval & Pruning
         if self.retriever:
             t_r0 = time.perf_counter()
             schema = self.retriever.retrieve(question, full_schema)
@@ -51,29 +63,85 @@ class Pipeline:
             out.retrieved_schema = schema
 
         ddl = schema_to_ddl(schema)
+
+        # 2. Knowledge Resolution (Values & Rules)
+        k_ctx = None
+        if self.knowledge_engine:
+            t_k0 = time.perf_counter()
+            k_ctx = self.knowledge_engine.resolve(question)
+            out.timings["knowledge"] = round(time.perf_counter() - t_k0, 4)
+            out.knowledge_context = k_ctx
+
+        # 3. Query Classification
+        t_c0 = time.perf_counter()
+        classification = self.classifier.classify(
+            question, num_tables_linked=len(schema.tables)
+        )
+        out.timings["classify"] = round(time.perf_counter() - t_c0, 4)
+        out.classification = classification
+
         feedback = None
 
+        # 4. Generation & Multi-Turn Self-Repair Loop
         for attempt in range(self.max_repairs + 1):
             out.attempts = attempt + 1
             t0 = time.perf_counter()
             try:
-                sql = self.generator.generate(question, ddl, feedback)
+                # Check if generator supports decomposed draft() with context
+                if hasattr(self.generator, "draft"):
+                    sql = self.generator.draft(
+                        question=question,
+                        schema_ddl=ddl,
+                        classification=classification,
+                        knowledge=k_ctx,
+                        feedback=feedback,
+                    )
+                else:
+                    sql = self.generator.generate(question, ddl, feedback)
             except Exception as e:
                 out.error = str(e)
                 return out
 
-            out.timings[f"generate_{attempt}"] = round(time.perf_counter() - t0, 3)
+            out.timings[f"generate_{attempt}"] = round(
+                time.perf_counter() - t0, 3
+            )
             out.sql = sql
+
+            # 5. AST & Dialect Safety Validation
             try:
                 validate(sql, full_schema, self.adapter.dialect())
-                t1 = time.perf_counter()
+            except ValidationError as e:
+                out.error = str(e)
+                feedback = f"Previous SQL: {sql} | AST Validation Error: {e}"
+                continue
+
+            # 6. Read-Only Execution
+            t1 = time.perf_counter()
+            try:
                 out.result = self.adapter.execute_readonly(sql)
                 out.timings[f"execute_{attempt}"] = round(
                     time.perf_counter() - t1, 3
                 )
-                out.error = None
-                return out
-            except (ValidationError, ExecutionError) as e:
+            except ExecutionError as e:
                 out.error = str(e)
-                feedback = f"Previous SQL: {sql} | Error: {e}"
+                feedback = f"Previous SQL: {sql} | Database Error: {e}"
+                continue
+
+            # 7. Semantic Critic Review
+            if self.critic and attempt < self.max_repairs:
+                review = self.critic.review(
+                    question=question,
+                    sql=sql,
+                    result=out.result,
+                    dialect=self.adapter.dialect(),
+                )
+                if not review.is_acceptable:
+                    feedback = (
+                        f"Previous SQL: {sql} | Semantic Issue: {review.feedback}"
+                    )
+                    continue
+
+            out.error = None
+            return out
+
         return out

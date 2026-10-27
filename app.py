@@ -5,9 +5,16 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from core.adapters.sqlite import SQLiteAdapter
 from core.adapters.duckdb import DuckDBAdapter
-from core.generator import SQLGenerator, MockGenerator
+from core.generator import SQLGenerator
+from core.providers.mock import MockProvider
+from core.providers.ollama import OllamaProvider
 from core.pipeline import Pipeline
 from core.retriever import SchemaRetriever
+from core.knowledge import DomainKnowledgeEngine
+from core.few_shot import FewShotRetriever
+from core.agents.classifier import QueryClassifier
+from core.agents.critic import SemanticCritic
+from core.agents.drafter import SQLDrafter
 
 # ---------------------------------------------------------
 # Seed SQL Schema & Sample Data
@@ -62,14 +69,48 @@ if DB_ENGINE == "duckdb":
 else:
     adapter = SQLiteAdapter(seed_sql=SEED_SQL)
 
-if os.environ.get("MOCK_LLM", "0") == "1" or not os.path.exists(MODEL_PATH):
-    print(f"Notice: Model file '{MODEL_PATH}' not found. Starting with MockGenerator for testing.")
-    generator = MockGenerator()
-else:
-    generator = SQLGenerator(model_path=MODEL_PATH)
+# 1. Initialize Domain Knowledge Engine with Business Rules
+knowledge_engine = DomainKnowledgeEngine(adapter)
+knowledge_engine.register_rule(
+    keywords=["top earners", "high earners", "highest paid"],
+    name="High Earner",
+    description="Employees with salary >= 90000",
+    sql_expression="salary >= 90000",
+)
+knowledge_engine.register_rule(
+    keywords=["recent sales", "latest sales"],
+    name="Recent Sales",
+    description="Sales made in March 2024 or later",
+    sql_expression="sale_date >= '2024-03-01'",
+)
 
+few_shot_retriever = FewShotRetriever(top_k=2)
+classifier = QueryClassifier()
+critic = SemanticCritic()
+
+# 2. Provider Selection (Ollama / Local GGUF / Mock Provider)
+OLLAMA_HOST = os.environ.get("OLLAMA_HOST")
+if OLLAMA_HOST:
+    print(f"Connecting to Ollama provider at {OLLAMA_HOST}")
+    provider = OllamaProvider(host=OLLAMA_HOST)
+elif os.path.exists(MODEL_PATH) and os.environ.get("MOCK_LLM", "0") != "1":
+    print(f"Loading local GGUF model: {MODEL_PATH}")
+    provider = SQLGenerator(model_path=MODEL_PATH)
+else:
+    print("Notice: Starting with MockProvider for local testing (no GPU or model weights needed).")
+    provider = MockProvider()
+
+drafter = SQLDrafter(provider=provider, few_shot_retriever=few_shot_retriever)
 retriever = SchemaRetriever()
-pipeline = Pipeline(adapter=adapter, generator=generator, retriever=retriever)
+
+pipeline = Pipeline(
+    adapter=adapter,
+    generator=drafter,
+    retriever=retriever,
+    knowledge_engine=knowledge_engine,
+    classifier=classifier,
+    critic=critic,
+)
 
 
 HTML_PAGE = """<!DOCTYPE html>

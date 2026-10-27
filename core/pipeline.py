@@ -56,7 +56,12 @@ class Pipeline:
         for attempt in range(self.max_repairs + 1):
             out.attempts = attempt + 1
             t0 = time.perf_counter()
-            sql = self.generator.generate(question, ddl, feedback)
+            try:
+                sql = self.generator.generate(question, ddl, feedback)
+            except Exception as e:
+                out.error = str(e)
+                return out
+
             out.timings[f"generate_{attempt}"] = round(time.perf_counter() - t0, 3)
             out.sql = sql
             try:

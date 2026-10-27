@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from core.adapters.sqlite import SQLiteAdapter
 from core.adapters.duckdb import DuckDBAdapter
-from core.generator import SQLGenerator
+from core.generator import SQLGenerator, MockGenerator
 from core.pipeline import Pipeline
 from core.retriever import SchemaRetriever
 
@@ -62,7 +62,12 @@ if DB_ENGINE == "duckdb":
 else:
     adapter = SQLiteAdapter(seed_sql=SEED_SQL)
 
-generator = SQLGenerator(model_path=MODEL_PATH)
+if os.environ.get("MOCK_LLM", "0") == "1" or not os.path.exists(MODEL_PATH):
+    print(f"Notice: Model file '{MODEL_PATH}' not found. Starting with MockGenerator for testing.")
+    generator = MockGenerator()
+else:
+    generator = SQLGenerator(model_path=MODEL_PATH)
+
 retriever = SchemaRetriever()
 pipeline = Pipeline(adapter=adapter, generator=generator, retriever=retriever)
 

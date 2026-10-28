@@ -15,6 +15,16 @@ class SQLiteAdapter:
             )
         self.conn.execute("PRAGMA query_only = ON")
 
+    def close(self):
+        """Explicitly close the underlying connection (important on Windows)."""
+        self.conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
     def dialect(self) -> str:
         return "sqlite"
 

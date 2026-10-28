@@ -26,6 +26,7 @@ class SQLGenerator:
                     f"or set the MODEL_PATH environment variable."
                 )
             try:
+                # pyrefly: ignore[missing-import]
                 from llama_cpp import Llama
             except ImportError as e:
                 raise GeneratorError(
@@ -79,6 +80,29 @@ class SQLGenerator:
         text = text.replace("```sql", "").replace("```", "").strip()
         return text
 
+    def generate_text(
+        self,
+        prompt: str,
+        stop: list[str] | None = None,
+        max_tokens: int = 150,
+        temperature: float = 0.0,
+    ) -> str:
+        """Satisfies the LLMProvider protocol expected by SQLDrafter."""
+        try:
+            output = self.llm(
+                prompt,
+                max_tokens=max_tokens,
+                stop=stop or ["<|im_end|>", ";", "\n\n"],
+                temperature=temperature,
+            )
+        except Exception as e:
+            if not isinstance(e, GeneratorError):
+                raise GeneratorError(f"Model inference failed: {e}") from e
+            raise
+        text = output["choices"][0]["text"].strip()
+        text = text.replace("```sql", "").replace("```", "").strip()
+        return text
+
 
 class MockGenerator:
     """Mock generator for testing without requiring a 145MB GGUF file or llama-cpp."""
@@ -101,5 +125,18 @@ class MockGenerator:
         q_lower = question.lower()
         for kw, sql in self.canned.items():
             if kw in q_lower:
+                return sql
+        return self.fallback_sql
+
+    def generate_text(
+        self,
+        prompt: str,
+        stop: list[str] | None = None,
+        max_tokens: int = 150,
+        temperature: float = 0.0,
+    ) -> str:
+        p_lower = prompt.lower()
+        for kw, sql in self.canned.items():
+            if kw in p_lower:
                 return sql
         return self.fallback_sql

@@ -106,7 +106,12 @@ def test_semantic_critic_case_mismatch():
 def test_full_decomposed_pipeline_end_to_end():
     adapter = SQLiteAdapter(seed_sql=SAMPLE_SEED_SQL)
     knowledge = DomainKnowledgeEngine(adapter)
-    provider = MockProvider()
+    # Use isolated canned responses that only reference columns in SAMPLE_SEED_SQL
+    provider = MockProvider(canned_responses={
+        "engineer":    "SELECT name, salary FROM employees WHERE department = 'Engineering';",
+        "engineering": "SELECT name, salary FROM employees WHERE department = 'Engineering';",
+        "sales":       "SELECT name, salary FROM employees WHERE department = 'Sales';",
+    })
     drafter = SQLDrafter(provider=provider)
 
     pipeline = Pipeline(

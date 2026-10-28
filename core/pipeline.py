@@ -8,6 +8,9 @@ from .agents.classifier import QueryClassifier, QueryClassification
 from .agents.critic import SemanticCritic
 
 
+from .translator import translate_query
+
+
 def schema_to_ddl(schema: Schema) -> str:
     lines = []
     for t in schema.tables:
@@ -27,6 +30,8 @@ class PipelineResult:
     retrieved_schema: Schema | None = None
     classification: QueryClassification | None = None
     knowledge_context: KnowledgeContext | None = None
+    original_question: str | None = None
+    is_translated: bool = False
 
 
 class Pipeline:
@@ -49,13 +54,25 @@ class Pipeline:
         self.max_repairs = max_repairs
 
     def ask(self, question: str) -> PipelineResult:
-        out = PipelineResult(question)
+        # Multilingual Translation Layer
+        t_t0 = time.perf_counter()
+        en_question, was_translated, _ = translate_query(question)
+        t_trans = round(time.perf_counter() - t_t0, 4)
+
+        out = PipelineResult(
+            question=en_question,
+            original_question=question if was_translated else None,
+            is_translated=was_translated,
+        )
+        if was_translated:
+            out.timings["translate"] = t_trans
+
         full_schema = self.adapter.get_schema()
 
         # 1. Retrieval & Pruning
         if self.retriever:
             t_r0 = time.perf_counter()
-            schema = self.retriever.retrieve(question, full_schema)
+            schema = self.retriever.retrieve(en_question, full_schema)
             out.timings["retrieve"] = round(time.perf_counter() - t_r0, 4)
             out.retrieved_schema = schema
         else:
@@ -68,14 +85,15 @@ class Pipeline:
         k_ctx = None
         if self.knowledge_engine:
             t_k0 = time.perf_counter()
-            k_ctx = self.knowledge_engine.resolve(question)
+            allowed = {t.name for t in schema.tables}
+            k_ctx = self.knowledge_engine.resolve(en_question, allowed_tables=allowed)
             out.timings["knowledge"] = round(time.perf_counter() - t_k0, 4)
             out.knowledge_context = k_ctx
 
         # 3. Query Classification
         t_c0 = time.perf_counter()
         classification = self.classifier.classify(
-            question, num_tables_linked=len(schema.tables)
+            en_question, num_tables_linked=len(schema.tables)
         )
         out.timings["classify"] = round(time.perf_counter() - t_c0, 4)
         out.classification = classification
@@ -90,14 +108,14 @@ class Pipeline:
                 # Check if generator supports decomposed draft() with context
                 if hasattr(self.generator, "draft"):
                     sql = self.generator.draft(
-                        question=question,
+                        question=en_question,
                         schema_ddl=ddl,
                         classification=classification,
                         knowledge=k_ctx,
                         feedback=feedback,
                     )
                 else:
-                    sql = self.generator.generate(question, ddl, feedback)
+                    sql = self.generator.generate(en_question, ddl, feedback)
             except Exception as e:
                 out.error = str(e)
                 return out

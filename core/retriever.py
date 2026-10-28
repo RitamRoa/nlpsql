@@ -26,7 +26,7 @@ class SchemaRetriever:
     def __init__(
         self,
         max_tables: int = 4,
-        max_cols_per_table: int = 8,
+        max_cols_per_table: int = 25,
         include_foreign_key_paths: bool = True,
     ):
         self.max_tables = max_tables

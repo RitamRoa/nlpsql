@@ -76,12 +76,24 @@ def _get_few_shot_examples(schema_name: str) -> list[FewShotExample]:
     if schema_name == "company":
         return [
             FewShotExample(
+                "List all employees",
+                "SELECT * FROM employees;",
+            ),
+            FewShotExample(
+                "List all employees in Engineering",
+                "SELECT * FROM employees WHERE department = 'Engineering';",
+            ),
+            FewShotExample(
                 "List all employees in the Sales department",
                 "SELECT * FROM employees WHERE department = 'Sales';",
             ),
             FewShotExample(
                 "Find employees earning more than 80000 ordered by salary",
                 "SELECT name, salary FROM employees WHERE salary > 80000 ORDER BY salary DESC;",
+            ),
+            FewShotExample(
+                "Find employees with salary greater than 70000",
+                "SELECT * FROM employees WHERE salary > 70000;",
             ),
             FewShotExample(
                 "What is the total sales amount made by each employee?",
@@ -100,12 +112,20 @@ def _get_few_shot_examples(schema_name: str) -> list[FewShotExample]:
                 "SELECT department, COUNT(*) AS num_employees FROM employees GROUP BY department;",
             ),
             FewShotExample(
+                "What is the average salary by department?",
+                "SELECT department, AVG(salary) as avg_sal FROM employees GROUP BY department;",
+            ),
+            FewShotExample(
                 "What is the average performance rating by department?",
                 "SELECT department, ROUND(AVG(performance_rating), 2) AS avg_rating FROM employees GROUP BY department ORDER BY avg_rating DESC;",
             ),
             FewShotExample(
                 "Show all remote employees",
-                "SELECT name, department, job_title FROM employees WHERE is_remote = 1;",
+                "SELECT * FROM employees WHERE is_remote = 1;",
+            ),
+            FewShotExample(
+                "Which projects are currently active?",
+                "SELECT name, budget, status FROM projects WHERE status = 'Active';",
             ),
             FewShotExample(
                 "Which projects are currently active and what is their budget?",
@@ -118,6 +138,18 @@ def _get_few_shot_examples(schema_name: str) -> list[FewShotExample]:
         ]
     elif schema_name == "ecommerce":
         return [
+            FewShotExample(
+                "Get all customers",
+                "SELECT * FROM customers;",
+            ),
+            FewShotExample(
+                "List all customers",
+                "SELECT * FROM customers;",
+            ),
+            FewShotExample(
+                "Show all products",
+                "SELECT * FROM products;",
+            ),
             FewShotExample(
                 "List all Gold tier customers",
                 "SELECT name, email, country FROM customers WHERE loyalty_tier = 'Gold';",

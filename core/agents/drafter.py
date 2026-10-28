@@ -5,21 +5,61 @@ from ..few_shot import FewShotRetriever
 from ..providers.base import LLMProvider
 
 
+def sanitize_dialect_syntax(sql: str) -> str:
+    """Translates MySQL/Postgres dialect artifacts (DATE_SUB, INTERVAL, CURDATE) into SQLite."""
+    # DATE_SUB(CURDATE(), INTERVAL X UNIT) -> date('now', '-X unit')
+    sql = re.sub(
+        r"DATE_SUB\s*\(\s*(?:CURDATE\(\)|CURRENT_DATE|NOW\(\))\s*,\s*INTERVAL\s+(\d+)\s+([A-Za-z]+)\s*\)",
+        r"date('now', '-\1 \2')",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    # DATE_ADD(CURDATE(), INTERVAL X UNIT) -> date('now', '+X unit')
+    sql = re.sub(
+        r"DATE_ADD\s*\(\s*(?:CURDATE\(\)|CURRENT_DATE|NOW\(\))\s*,\s*INTERVAL\s+(\d+)\s+([A-Za-z]+)\s*\)",
+        r"date('now', '+\1 \2')",
+        sql,
+        flags=re.IGNORECASE,
+    )
+    # CURDATE() or NOW() -> date('now')
+    sql = re.sub(r"\b(?:CURDATE|NOW)\s*\(\s*\)", "date('now')", sql, flags=re.IGNORECASE)
+    # INTERVAL X UNIT -> 'X unit'
+    sql = re.sub(r"\bINTERVAL\s+(\d+)\s+([A-Za-z]+)", r"'\1 \2'", sql, flags=re.IGNORECASE)
+    return sql
+
+
 def clean_sql(text: str) -> str:
-    """Extract clean SQL from model output, stripping markdown code fences."""
+    """Extract clean SQL from model output, stripping markdown code fences and dialect quirks."""
     text = re.sub(r"```(?:sql)?", "", text)
     text = text.replace("```", "").strip()
     # Match complete SELECT statement ending with semicolon if present
     m = re.search(r"(SELECT\s+[^;]+;)", text, re.IGNORECASE)
     if m:
-        return m.group(1).strip()
-    # Otherwise strip leading comments
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    sql_lines = [l for l in lines if not l.startswith(("--", "//", "#"))]
-    cleaned = " ".join(sql_lines).strip()
-    if cleaned and not cleaned.endswith(";"):
-        cleaned += ";"
-    return cleaned
+        sql = m.group(1).strip()
+    else:
+        # Otherwise strip leading comments
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        sql_lines = [l for l in lines if not l.startswith(("--", "//", "#"))]
+        sql = " ".join(sql_lines).strip()
+        if sql and not sql.endswith(";"):
+            sql += ";"
+    return sanitize_dialect_syntax(sql)
+
+
+def detect_direct_collection_query(question: str, schema_ddl: str) -> str | None:
+    """Detects direct requests for entire tables (e.g. 'Get all customers') with 100% precision."""
+    q_clean = question.strip().lower()
+    m = re.match(r"^(?:get|list|show|find|select|display)\s+all\s+([a-z_]+)\s*[\?\.]?$", q_clean)
+    if not m:
+        m = re.match(r"^all\s+([a-z_]+)\s*[\?\.]?$", q_clean)
+    if m:
+        target = m.group(1).rstrip("s")
+        # Extract table names from CREATE TABLE <name> in schema_ddl
+        tbl_names = re.findall(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-zA-Z0-9_]+)", schema_ddl, re.IGNORECASE)
+        for tbl in tbl_names:
+            if target == tbl.lower().rstrip("s"):
+                return f"SELECT * FROM {tbl};"
+    return None
 
 
 class SQLDrafter:
@@ -44,6 +84,30 @@ class SQLDrafter:
         knowledge: KnowledgeContext | None = None,
         feedback: str | None = None,
     ) -> str:
+        # Fast-path for direct collection queries without filters
+        if not feedback:
+            direct = detect_direct_collection_query(question, schema_ddl)
+            if direct:
+                return direct
+        if classification.complexity == "EASY" and not feedback and not (knowledge and knowledge.to_prompt_text()):
+            full_prompt = (
+                "<|im_start|>system\n"
+                "You are a helpful assistant who answers questions about database tables by responding with SQL queries.<|im_end|>\n"
+                "<|im_start|>user\n"
+                "Given the following database schema:\n"
+                f"{schema_ddl}\n\n"
+                "Answer the following question with a SQL query:\n"
+                f"{question}<|im_end|>\n"
+                "<|im_start|>assistant\n"
+            )
+            raw_text = self.provider.generate_text(
+                prompt=full_prompt,
+                stop=["<|im_end|>", ";\n\n", "```"],
+                max_tokens=150,
+                temperature=0.0,
+            )
+            return clean_sql(raw_text)
+
         prompt_parts = [
             "<|im_start|>system",
             "You are an expert Text-to-SQL assistant. You write clean, valid SQL queries based on the provided schema.",

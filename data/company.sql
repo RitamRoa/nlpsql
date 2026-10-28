@@ -5,6 +5,7 @@
 CREATE TABLE departments (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
+    department TEXT GENERATED ALWAYS AS (name) VIRTUAL,
     manager_id INTEGER,
     budget INTEGER NOT NULL,
     location TEXT NOT NULL

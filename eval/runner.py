@@ -138,18 +138,33 @@ def run_ablation_study(
     adapter: DBAdapter,
     generator: Any,
     retriever: Any | None = None,
+    knowledge_engine: Any | None = None,
+    classifier: Any | None = None,
+    critic: Any | None = None,
 ) -> dict[str, BenchmarkReport]:
     """Runs an ablation comparing baseline (no repair) vs pipeline (with 1-shot self-repair)."""
     # Baseline: max_repairs = 0
     p_baseline = Pipeline(
-        adapter=adapter, generator=generator, retriever=retriever, max_repairs=0
+        adapter=adapter,
+        generator=generator,
+        retriever=retriever,
+        knowledge_engine=knowledge_engine,
+        classifier=classifier,
+        critic=critic,
+        max_repairs=0,
     )
     runner_baseline = EvalRunner(pipeline=p_baseline, adapter=adapter)
     res_baseline = runner_baseline.evaluate_dataset(dataset)
 
     # With Self-Repair: max_repairs = 1
     p_repair = Pipeline(
-        adapter=adapter, generator=generator, retriever=retriever, max_repairs=1
+        adapter=adapter,
+        generator=generator,
+        retriever=retriever,
+        knowledge_engine=knowledge_engine,
+        classifier=classifier,
+        critic=critic,
+        max_repairs=1,
     )
     runner_repair = EvalRunner(pipeline=p_repair, adapter=adapter)
     res_repair = runner_repair.evaluate_dataset(dataset)

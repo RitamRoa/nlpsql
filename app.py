@@ -2,6 +2,14 @@ import base64
 import json
 import os
 import urllib.parse
+import sys
+import io
+if sys.platform == "win32":
+    if hasattr(sys.stdout, "buffer"):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "buffer"):
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from core.generator import SQLGenerator
@@ -379,6 +387,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
             </button>
 
             <div class="results" id="results">
+                <div id="transBanner" style="display:none;background:rgba(99,157,255,0.1);border:1px solid rgba(99,157,255,0.3);border-radius:8px;padding:.5rem .8rem;font-size:.85rem;color:#93c5fd;margin-bottom:.5rem;"></div>
                 <div class="sql-box"><code id="sqlOut"></code></div>
                 <div class="stats">
                     ⚡ LLM: <span id="tInf">-</span>
@@ -548,6 +557,13 @@ async function runQuery() {
         }).then(r => r.json());
 
         document.getElementById('results').style.display = 'flex';
+        const tb = document.getElementById('transBanner');
+        if (d.is_translated && d.translated_query) {
+            tb.style.display = 'block';
+            tb.innerHTML = `🌐 <strong>Translated to English:</strong> "${esc(d.translated_query)}"`;
+        } else {
+            tb.style.display = 'none';
+        }
         document.getElementById('sqlOut').textContent = d.sql || '-- No SQL generated';
         document.getElementById('tInf').textContent = d.inference_time != null ? d.inference_time.toFixed(3)+'s' : '-';
         document.getElementById('tQ').textContent   = d.query_time    != null ? d.query_time.toFixed(4)+'s'    : '-';
@@ -906,6 +922,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "timings":        out.timings,
                 "inference_time": inf_t,
                 "query_time":     q_t,
+                "is_translated":  out.is_translated,
+                "translated_query": out.question if out.is_translated else None,
+                "original_query": out.original_question,
             })
             return
 
@@ -939,14 +958,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
 def run_server(port: int = 8000):
     httpd = HTTPServer(("", port), DashboardHandler)
     print(f"\n{'='*52}")
-    print(f"  NLP-SQL  →  http://localhost:{port}")
+    print(f"  NLP-SQL  ->  http://localhost:{port}")
     print(f"  Built-in schemas : {list_available_schemas()}")
     print(f"  Active schema    : {current_schema_name}")
     print(f"{'='*52}\n")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\nStopping server…")
+        print("\nStopping server...")
 
 
 if __name__ == "__main__":

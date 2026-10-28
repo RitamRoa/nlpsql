@@ -80,13 +80,19 @@ class DomainKnowledgeEngine:
             (kw_set, BusinessRule(name, description, sql_expression))
         )
 
-    def resolve(self, question: str) -> KnowledgeContext:
+    def resolve(
+        self,
+        question: str,
+        allowed_tables: set[str] | list[str] | None = None,
+    ) -> KnowledgeContext:
         """Finds database values and business rules mentioned in the user question."""
         q_lower = question.lower()
         q_tokens = set(re.findall(r"[a-zA-Z0-9]+", q_lower))
 
         matched_values = []
         for tbl, col, val in self.value_index:
+            if allowed_tables and tbl not in allowed_tables:
+                continue
             val_lower = val.lower()
             # Match exact substring or token match
             if val_lower in q_lower or val_lower in q_tokens:

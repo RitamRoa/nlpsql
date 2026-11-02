@@ -40,6 +40,59 @@ def test_load_university_schema():
     assert "enrollments" in table_names
 
 
+def test_healthcare_pipeline_finds_current_inpatients():
+    from core.providers.mock import MockProvider
+
+    pipeline, adapter, _ = build_pipeline(
+        db_engine="sqlite",
+        schema_name="healthcare",
+        provider=MockProvider(),
+    )
+    try:
+        result = pipeline.ask("Show all patients currently admitted")
+        assert result.error is None
+        assert result.result is not None
+        assert result.sql == (
+            "SELECT p.name, a.diagnosis, a.ward, a.admit_date "
+            "FROM admissions a JOIN patients p ON a.patient_id = p.id "
+            "WHERE a.discharge_date IS NULL;"
+        )
+        assert result.result.rows
+    finally:
+        adapter.close()
+
+
+def test_healthcare_pipeline_generates_schema_grounded_queries():
+    from core.providers.mock import MockProvider
+
+    pipeline, adapter, _ = build_pipeline(
+        db_engine="sqlite",
+        schema_name="healthcare",
+        provider=MockProvider(),
+    )
+    try:
+        cardiologists = pipeline.ask("List all cardiologists")
+        assert cardiologists.error is None
+        assert cardiologists.sql is not None
+        assert "FROM doctors" in cardiologists.sql
+        assert "specialization = 'Cardiology'" in cardiologists.sql
+        assert {row[1] for row in cardiologists.result.rows} == {"Cardiology"}
+
+        uninsured = pipeline.ask("Which patients have no insurance?")
+        assert uninsured.error is None
+        assert uninsured.sql is not None
+        assert "insurance_provider IS NULL" in uninsured.sql
+        assert len(uninsured.result.rows) == 1
+
+        appointment_counts = pipeline.ask("How many appointments does each doctor have?")
+        assert appointment_counts.error is None
+        assert appointment_counts.sql is not None
+        assert "COUNT(a.id)" in appointment_counts.sql
+        assert appointment_counts.result.rows
+    finally:
+        adapter.close()
+
+
 def test_connect_to_physical_db_file_on_disk():
     # Create a real, physical .db file on disk (Option 3)
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tf:

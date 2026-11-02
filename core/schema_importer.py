@@ -10,7 +10,10 @@ Supported formats:
 import csv
 import io
 import json
+import math
 import re
+import sqlglot
+from sqlglot import exp
 
 
 # ── Type inference helpers ────────────────────────────────────────────────────
@@ -39,8 +42,19 @@ def _sql_val(v: object, col_type: str) -> str:
     """Format a Python value as a SQL literal."""
     if v is None or (isinstance(v, str) and v.strip() == ""):
         return "NULL"
-    if col_type in ("INTEGER", "REAL"):
-        return str(v)
+    if col_type == "INTEGER":
+        try:
+            return str(int(str(v).strip()))
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"Value {v!r} is not valid INTEGER data.") from error
+    if col_type == "REAL":
+        try:
+            number = float(str(v).strip())
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"Value {v!r} is not valid REAL data.") from error
+        if not math.isfinite(number):
+            raise ValueError(f"Value {v!r} is not a finite REAL number.")
+        return repr(number)
     # TEXT: escape single quotes
     return "'" + str(v).replace("'", "''") + "'"
 
@@ -55,6 +69,28 @@ def _safe_name(name: str) -> str:
 
 def parse_sql(content: str) -> tuple[str, list[str]]:
     """Return (seed_sql, table_names) from raw SQL text."""
+    try:
+        statements = [statement for statement in sqlglot.parse(content, read="sqlite") if statement]
+    except sqlglot.errors.ParseError as error:
+        raise ValueError(f"SQL file could not be parsed safely: {error}") from error
+    if not statements:
+        raise ValueError("SQL file contains no statements.")
+    for statement in statements:
+        if isinstance(statement, exp.Create) and statement.args.get("kind") in {"TABLE", "INDEX"}:
+            if any(isinstance(node, exp.Func) for node in statement.walk()):
+                raise ValueError("SQL uploads may not use functions in schema definitions.")
+            continue
+        if isinstance(statement, exp.Insert):
+            values = statement.args.get("expression")
+            if not isinstance(values, exp.Values):
+                raise ValueError("SQL uploads may use only literal INSERT ... VALUES statements.")
+            if any(
+                not isinstance(node, (exp.Values, exp.Tuple, exp.Literal, exp.Null))
+                for node in values.walk()
+            ):
+                raise ValueError("SQL uploads may use only literal INSERT ... VALUES statements.")
+            continue
+        raise ValueError("SQL uploads may contain only CREATE TABLE/INDEX and INSERT statements.")
     table_names = re.findall(
         r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[\"'`]?(\w+)[\"'`]?",
         content,
@@ -63,7 +99,11 @@ def parse_sql(content: str) -> tuple[str, list[str]]:
     return content.strip(), table_names
 
 
-def parse_csv(content: str, table_name: str = "uploaded_data") -> tuple[str, list[str]]:
+def parse_csv(
+    content: str,
+    table_name: str = "uploaded_data",
+    type_overrides: dict[str, str] | None = None,
+) -> tuple[str, list[str]]:
     """
     Auto-detect schema from CSV headers and infer column types.
     Returns (seed_sql, [table_name]).
@@ -83,6 +123,7 @@ def parse_csv(content: str, table_name: str = "uploaded_data") -> tuple[str, lis
     for col in fieldnames:
         samples = [r.get(col, "") for r in rows]
         col_types[col] = _infer_col_type(samples)
+    _apply_type_overrides(col_types, type_overrides)
 
     safe_cols = [_safe_name(c) for c in fieldnames]
 
@@ -103,7 +144,11 @@ def parse_csv(content: str, table_name: str = "uploaded_data") -> tuple[str, lis
     return "\n".join(sql_parts), [table_name]
 
 
-def parse_json(content: str, table_name: str = "uploaded_data") -> tuple[str, list[str]]:
+def parse_json(
+    content: str,
+    table_name: str = "uploaded_data",
+    type_overrides: dict[str, str] | None = None,
+) -> tuple[str, list[str]]:
     """
     Convert a JSON array (or dict-of-arrays) into seed SQL.
     Returns (seed_sql, [table_name(s)]).
@@ -117,7 +162,7 @@ def parse_json(content: str, table_name: str = "uploaded_data") -> tuple[str, li
         items = {k: v for k, v in data.items() if isinstance(v, list) and v and isinstance(v[0], dict)}
         if items:
             for tname, records in items.items():
-                sql, tables = _json_records_to_sql(records, _safe_name(tname))
+                sql, tables = _json_records_to_sql(records, _safe_name(tname), type_overrides)
                 all_sql.append(sql)
                 all_tables.extend(tables)
             return "\n\n".join(all_sql), all_tables
@@ -130,10 +175,14 @@ def parse_json(content: str, table_name: str = "uploaded_data") -> tuple[str, li
     if not isinstance(data[0], dict):
         raise ValueError("JSON array elements must be objects (dicts).")
 
-    return _json_records_to_sql(data, _safe_name(table_name))
+    return _json_records_to_sql(data, _safe_name(table_name), type_overrides)
 
 
-def _json_records_to_sql(records: list[dict], table_name: str) -> tuple[str, list[str]]:
+def _json_records_to_sql(
+    records: list[dict],
+    table_name: str,
+    type_overrides: dict[str, str] | None = None,
+) -> tuple[str, list[str]]:
     # Collect all keys (union across all records)
     all_keys: list[str] = []
     for rec in records:
@@ -148,6 +197,7 @@ def _json_records_to_sql(records: list[dict], table_name: str) -> tuple[str, lis
     for k in all_keys:
         samples = [str(r[k]) for r in records if r.get(k) is not None]
         col_types[k] = _infer_col_type(samples)
+    _apply_type_overrides(col_types, type_overrides)
 
     col_defs = ", ".join(
         f'"{sk}" {col_types[ok]}' for sk, ok in zip(safe_keys, all_keys)
@@ -161,6 +211,26 @@ def _json_records_to_sql(records: list[dict], table_name: str) -> tuple[str, lis
         sql_parts.append(f'INSERT INTO "{table_name}" VALUES ({vals});')
 
     return "\n".join(sql_parts), [table_name]
+
+
+def _apply_type_overrides(
+    column_types: dict[str, str],
+    type_overrides: dict[str, str] | None,
+) -> None:
+    if not type_overrides:
+        return
+    valid_types = {"INTEGER", "REAL", "TEXT"}
+    for column, column_type in type_overrides.items():
+        source_column = column if column in column_types else next(
+            (name for name in column_types if _safe_name(name) == column),
+            None,
+        )
+        if source_column is None:
+            raise ValueError(f"Unknown column type override: {column}")
+        normalized_type = str(column_type).upper()
+        if normalized_type not in valid_types:
+            raise ValueError(f"Unsupported column type: {column_type}")
+        column_types[source_column] = normalized_type
 
 
 def parse_pdf(content: bytes) -> tuple[str, list[str]]:
@@ -280,6 +350,7 @@ def import_schema(
     filename: str,
     content_bytes: bytes,
     custom_table_name: str | None = None,
+    type_overrides: dict[str, str] | None = None,
 ) -> tuple[str, list[str]]:
     """
     Dispatch to the correct parser based on file extension.
@@ -299,10 +370,18 @@ def import_schema(
         return parse_sql(content_bytes.decode("utf-8", errors="replace"))
 
     if ext == "csv":
-        return parse_csv(content_bytes.decode("utf-8", errors="replace"), table_name)
+        return parse_csv(
+            content_bytes.decode("utf-8", errors="replace"),
+            table_name,
+            type_overrides,
+        )
 
     if ext == "json":
-        return parse_json(content_bytes.decode("utf-8", errors="replace"), table_name)
+        return parse_json(
+            content_bytes.decode("utf-8", errors="replace"),
+            table_name,
+            type_overrides,
+        )
 
     if ext == "pdf":
         return parse_pdf(content_bytes)

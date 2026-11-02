@@ -1,4 +1,6 @@
-from .base import LLMProvider
+import re
+
+from .base import LLMProvider, ProviderError
 
 
 class MockProvider:
@@ -14,6 +16,7 @@ class MockProvider:
             "engineer":     "SELECT name, salary, job_title FROM employees WHERE department = 'Engineering';",
             "engineering":  "SELECT name, salary, job_title FROM employees WHERE department = 'Engineering';",
             "sales dept":   "SELECT name, salary FROM employees WHERE department = 'Sales';",
+            "sales":        "SELECT name, salary FROM employees WHERE department = 'Sales';",
             "department count": "SELECT department, COUNT(*) AS num_employees FROM employees GROUP BY department;",
             "salary":       "SELECT name, salary FROM employees WHERE salary > 70000 ORDER BY salary DESC;",
             "manager":      "SELECT d.name AS department, e.name AS manager FROM departments d JOIN employees e ON d.manager_id = e.id;",
@@ -54,6 +57,8 @@ class MockProvider:
 
             # ── Healthcare schema ───────────────────────────────────────
             "doctor":       "SELECT name, specialization, years_experience, consultation_fee FROM doctors ORDER BY years_experience DESC;",
+            "cardiologist": "SELECT name, specialization, years_experience, consultation_fee FROM doctors WHERE specialization = 'Cardiology' ORDER BY years_experience DESC;",
+            "cardiology":   "SELECT name, specialization, years_experience, consultation_fee FROM doctors WHERE specialization = 'Cardiology' ORDER BY years_experience DESC;",
             "patient":      "SELECT name, gender, blood_type, city, insurance_provider FROM patients;",
             "appointment":  "SELECT p.name AS patient, d.name AS doctor, a.appointment_date, a.status, a.reason FROM appointments a JOIN patients p ON a.patient_id = p.id JOIN doctors d ON a.doctor_id = d.id ORDER BY a.appointment_date DESC;",
             "admission":    "SELECT p.name AS patient, ad.diagnosis, ad.ward, ad.admit_date, ad.discharge_date, ad.total_bill FROM admissions ad JOIN patients p ON ad.patient_id = p.id ORDER BY ad.admit_date DESC;",
@@ -61,6 +66,12 @@ class MockProvider:
             "diagnosis":    "SELECT p.name AS patient, ad.diagnosis, ad.ward, ad.total_bill FROM admissions ad JOIN patients p ON ad.patient_id = p.id ORDER BY ad.total_bill DESC;",
             "specialist":   "SELECT specialization, COUNT(*) AS doctor_count, ROUND(AVG(consultation_fee), 2) AS avg_fee FROM doctors GROUP BY specialization ORDER BY avg_fee DESC;",
             "hospital":     "SELECT name, city, state, bed_count, type FROM hospitals;",
+            "currently admitted": "SELECT p.name, a.diagnosis, a.ward, a.admit_date FROM admissions a JOIN patients p ON a.patient_id = p.id WHERE a.discharge_date IS NULL;",
+            "no insurance": "SELECT name, city, blood_type FROM patients WHERE insurance_provider IS NULL;",
+            "without insurance": "SELECT name, city, blood_type FROM patients WHERE insurance_provider IS NULL;",
+            "appointments per doctor": "SELECT d.name AS doctor, COUNT(a.id) AS total_appointments FROM doctors d LEFT JOIN appointments a ON d.id = a.doctor_id GROUP BY d.id ORDER BY total_appointments DESC;",
+            "appointments does each doctor": "SELECT d.name AS doctor, COUNT(a.id) AS total_appointments FROM doctors d LEFT JOIN appointments a ON d.id = a.doctor_id GROUP BY d.id ORDER BY total_appointments DESC;",
+            "appointments for each doctor": "SELECT d.name AS doctor, COUNT(a.id) AS total_appointments FROM doctors d LEFT JOIN appointments a ON d.id = a.doctor_id GROUP BY d.id ORDER BY total_appointments DESC;",
             "insurance":    "SELECT insurance_provider, COUNT(*) AS patient_count FROM patients WHERE insurance_provider IS NOT NULL GROUP BY insurance_provider ORDER BY patient_count DESC;",
             "icu":          "SELECT p.name AS patient, ad.diagnosis, ad.admit_date, ad.total_bill FROM admissions ad JOIN patients p ON ad.patient_id = p.id WHERE ad.ward = 'ICU';",
             "medication":   "SELECT medication, COUNT(*) AS prescription_count FROM prescriptions GROUP BY medication ORDER BY prescription_count DESC;",
@@ -85,20 +96,29 @@ class MockProvider:
         elif "question:" in p_lower:
             q_part = p_lower.split("question:")[1].split("\n")[0]
 
-        # Try multi-word keyword matches first (most specific)
+        schema_tables = set(re.findall(
+            r"\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-z_]\w*)",
+            p_lower,
+        ))
+
+        def matches_schema(sql: str) -> bool:
+            if not schema_tables:
+                return True
+            referenced_tables = set(re.findall(r"\b(?:FROM|JOIN)\s+([a-z_]\w*)", sql, re.IGNORECASE))
+            return bool(referenced_tables) and referenced_tables <= schema_tables
+
+        # Try longer phrases before single-word matches, but only use SQL for this schema.
         multi_word_keys = [(k, v) for k, v in self.canned.items() if " " in k]
         for kw, sql in multi_word_keys:
-            if kw in q_part:
+            if kw in q_part and matches_schema(sql):
                 return sql
 
-        # Then single-word matches in the question
+        # Then single-word matches in the question.
         for kw, sql in self.canned.items():
-            if " " not in kw and kw in q_part:
+            if " " not in kw and kw in q_part and matches_schema(sql):
                 return sql
 
-        # Fallback: search full prompt
-        for kw, sql in self.canned.items():
-            if kw in p_lower:
-                return sql
-
-        return "SELECT * FROM employees;"
+        raise ProviderError(
+            "The mock SQL provider has no schema-matched example for this question. "
+            "Use a configured language model or rephrase the question."
+        )

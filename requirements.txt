@@ -1,0 +1,8 @@
+duckdb
+pdfplumber
+scikit-learn
+sqlglot
+sqlalchemy
+psycopg[binary]
+pymysql
+app

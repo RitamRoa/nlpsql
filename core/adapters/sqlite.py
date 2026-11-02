@@ -4,7 +4,13 @@ from .base import Column, Table, Schema, Result, ExecutionError
 
 
 class SQLiteAdapter:
-    def __init__(self, path: str = ":memory:", seed_sql: str | None = None):
+    def __init__(
+        self,
+        path: str = ":memory:",
+        seed_sql: str | None = None,
+        foreign_key_overrides: list[tuple[str, str, str, str]] | None = None,
+    ):
+        self.foreign_key_overrides = foreign_key_overrides or []
         if path == ":memory:":
             self.conn = sqlite3.connect(path, check_same_thread=False)
             if seed_sql:
@@ -45,6 +51,11 @@ class SQLiteAdapter:
                 (r[3], r[2], r[4])
                 for r in self.conn.execute(f'PRAGMA foreign_key_list("{t}")')
             ]
+            fks.extend(
+                (column, ref_table, ref_column)
+                for table, column, ref_table, ref_column in self.foreign_key_overrides
+                if table == t and (column, ref_table, ref_column) not in fks
+            )
             tables.append(Table(t, cols, fks))
         return Schema(tables)
 

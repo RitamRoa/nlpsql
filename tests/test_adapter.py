@@ -66,3 +66,15 @@ def test_select_limit_truncation():
     result_all = adapter.execute_readonly("SELECT * FROM employees", limit=10)
     assert len(result_all.rows) == 5
     assert result_all.truncated is False
+
+
+def test_schema_includes_inferred_relationship_overrides():
+    adapter = SQLiteAdapter(
+        seed_sql=SAMPLE_SEED_SQL,
+        foreign_key_overrides=[("departments", "manager_id", "employees", "id")],
+    )
+    try:
+        departments = next(table for table in adapter.get_schema().tables if table.name == "departments")
+        assert ("manager_id", "employees", "id") in departments.foreign_keys
+    finally:
+        adapter.close()

@@ -1,5 +1,6 @@
 import time
 from dataclasses import dataclass, field
+from typing import Callable
 from .adapters.base import Result, ExecutionError, Schema
 from .validator import validate, ValidationError
 from .retriever import BaseRetriever
@@ -14,7 +15,12 @@ from .translator import translate_query
 def schema_to_ddl(schema: Schema) -> str:
     lines = []
     for t in schema.tables:
-        cols = ", ".join(f"{c.name} {c.type}" for c in t.columns)
+        definitions = [f"{c.name} {c.type}" for c in t.columns]
+        definitions.extend(
+            f"FOREIGN KEY ({column}) REFERENCES {ref_table}({ref_column})"
+            for column, ref_table, ref_column in t.foreign_keys
+        )
+        cols = ", ".join(definitions)
         lines.append(f"CREATE TABLE {t.name} ({cols});")
     return "\n".join(lines)
 
@@ -32,6 +38,7 @@ class PipelineResult:
     knowledge_context: KnowledgeContext | None = None
     original_question: str | None = None
     is_translated: bool = False
+    sql_history: list[str] = field(default_factory=list)
 
 
 class Pipeline:
@@ -53,8 +60,17 @@ class Pipeline:
         self.critic = critic or SemanticCritic()
         self.max_repairs = max_repairs
 
-    def ask(self, question: str) -> PipelineResult:
+    def ask(
+        self,
+        question: str,
+        on_progress: Callable[[str, str], None] | None = None,
+    ) -> PipelineResult:
+        def report(stage: str, message: str) -> None:
+            if on_progress:
+                on_progress(stage, message)
+
         # Multilingual Translation Layer
+        report("translate", "Checking query language")
         t_t0 = time.perf_counter()
         en_question, was_translated, _ = translate_query(question)
         t_trans = round(time.perf_counter() - t_t0, 4)
@@ -70,6 +86,7 @@ class Pipeline:
         full_schema = self.adapter.get_schema()
 
         # 1. Retrieval & Pruning
+        report("schema", "Reading database schema")
         if self.retriever:
             t_r0 = time.perf_counter()
             schema = self.retriever.retrieve(en_question, full_schema)
@@ -82,6 +99,7 @@ class Pipeline:
         ddl = schema_to_ddl(schema)
 
         # 2. Knowledge Resolution (Values & Rules)
+        report("classify", "Understanding the requested analysis")
         k_ctx = None
         if self.knowledge_engine:
             t_k0 = time.perf_counter()
@@ -103,6 +121,7 @@ class Pipeline:
         # 4. Generation & Multi-Turn Self-Repair Loop
         for attempt in range(self.max_repairs + 1):
             out.attempts = attempt + 1
+            report("generate", f"Generating SQL (attempt {out.attempts})")
             t0 = time.perf_counter()
             try:
                 # Check if generator supports decomposed draft() with context
@@ -124,16 +143,21 @@ class Pipeline:
                 time.perf_counter() - t0, 3
             )
             out.sql = sql
+            out.sql_history.append(sql)
 
             # 5. AST & Dialect Safety Validation
+            report("validate", "Checking SQL safety")
             try:
                 validate(sql, full_schema, self.adapter.dialect())
             except ValidationError as e:
                 out.error = str(e)
                 feedback = f"Previous SQL: {sql} | AST Validation Error: {e}"
+                if attempt < self.max_repairs:
+                    report("repair", "SQL needs repair; preparing another attempt")
                 continue
 
             # 6. Read-Only Execution
+            report("execute", "Running the read-only query")
             t1 = time.perf_counter()
             try:
                 out.result = self.adapter.execute_readonly(sql)
@@ -143,6 +167,8 @@ class Pipeline:
             except ExecutionError as e:
                 out.error = str(e)
                 feedback = f"Previous SQL: {sql} | Database Error: {e}"
+                if attempt < self.max_repairs:
+                    report("repair", "Query failed; preparing a repaired SQL attempt")
                 continue
 
             # 7. Semantic Critic Review
@@ -157,9 +183,12 @@ class Pipeline:
                     feedback = (
                         f"Previous SQL: {sql} | Semantic Issue: {review.feedback}"
                     )
+                    report("repair", "Reviewing a corrected query")
                     continue
 
             out.error = None
+            report("complete", "Query completed")
             return out
 
+        report("complete", "Query finished with an error")
         return out

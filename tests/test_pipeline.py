@@ -40,6 +40,21 @@ def test_pipeline_successful_run():
     assert "execute_0" in res.timings
 
 
+def test_pipeline_reports_progress_and_keeps_repair_sql_history():
+    adapter = SQLiteAdapter(seed_sql=SAMPLE_SEED_SQL)
+    generator = MockGenerator(["SELECT name FROM missing;", "SELECT name FROM employees;"])
+    pipeline = Pipeline(adapter, generator, max_repairs=1)
+    progress = []
+
+    res = pipeline.ask("List employee names", on_progress=lambda stage, message: progress.append((stage, message)))
+
+    assert res.error is None
+    assert res.sql_history == ["SELECT name FROM missing;", "SELECT name FROM employees;"]
+    assert [stage for stage, _ in progress][0] == "translate"
+    assert "repair" in [stage for stage, _ in progress]
+    assert [stage for stage, _ in progress][-1] == "complete"
+
+
 def test_pipeline_one_shot_repair_success():
     adapter = SQLiteAdapter(seed_sql=SAMPLE_SEED_SQL)
     # 1st attempt generates invalid table name 'staff', 2nd attempt fixes it to 'employees'

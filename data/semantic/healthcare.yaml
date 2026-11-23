@@ -1,0 +1,236 @@
+version: 1
+tables:
+  hospitals:
+    description: Records for hospitals.
+    columns:
+      id:
+        description: Unique identifier for this hospitals record.
+      name:
+        description: Name (text).
+      city:
+        description: City (text).
+      state:
+        description: State (text).
+      bed_count:
+        description: Bed count (integer).
+      type:
+        description: Type (text).
+  departments:
+    description: Records for departments.
+    columns:
+      id:
+        description: Unique identifier for this departments record.
+      name:
+        description: Name (text).
+      hospital_id:
+        description: Identifier of the related hospitals record.
+      floor:
+        description: Floor (integer).
+  doctors:
+    description: Records for doctors.
+    columns:
+      id:
+        description: Unique identifier for this doctors record.
+      name:
+        description: Name (text).
+      specialization:
+        description: Specialization (text).
+      department_id:
+        description: Identifier of the related departments record.
+      years_experience:
+        description: Years experience (integer).
+      license_no:
+        description: License no (text).
+      consultation_fee:
+        description: Consultation fee (real).
+  patients:
+    description: Records for patients.
+    columns:
+      id:
+        description: Unique identifier for this patients record.
+      name:
+        description: Name (text).
+      dob:
+        description: Dob (text).
+      gender:
+        description: Gender (text).
+      blood_type:
+        description: Blood type (text).
+      city:
+        description: City (text).
+      insurance_provider:
+        description: Insurance provider (text).
+  appointments:
+    description: Records for appointments.
+    columns:
+      id:
+        description: Unique identifier for this appointments record.
+      patient_id:
+        description: Identifier of the related patients record.
+      doctor_id:
+        description: Identifier of the related doctors record.
+      appointment_date:
+        description: Appointment date (text).
+      appointment_time:
+        description: Appointment time (text).
+      status:
+        description: Status (text).
+      reason:
+        description: Reason (text).
+  admissions:
+    description: Records for admissions.
+    columns:
+      id:
+        description: Unique identifier for this admissions record.
+      patient_id:
+        description: Identifier of the related patients record.
+      hospital_id:
+        description: Identifier of the related hospitals record.
+      doctor_id:
+        description: Identifier of the related doctors record.
+      admit_date:
+        description: Admit date (text).
+      discharge_date:
+        description: Discharge date (text).
+      ward:
+        description: Ward (text).
+      diagnosis:
+        description: Diagnosis (text).
+      total_bill:
+        description: Total bill (real).
+  prescriptions:
+    description: Records for prescriptions.
+    columns:
+      id:
+        description: Unique identifier for this prescriptions record.
+      appointment_id:
+        description: Identifier of the related appointments record.
+      medication:
+        description: Medication (text).
+      dosage:
+        description: Dosage (text).
+      duration_days:
+        description: Duration days (integer).
+      refills:
+        description: Refills (integer).
+metrics:
+- name: hospitals_bed_count_total
+  description: Total bed count across hospitals.
+  expression: SUM("hospitals"."bed_count")
+  synonyms:
+  - total bed count
+  - sum of bed count
+- name: hospitals_bed_count_average
+  description: Average bed count across hospitals.
+  expression: AVG("hospitals"."bed_count")
+  synonyms:
+  - average bed count
+  - mean bed count
+- name: departments_floor_total
+  description: Total floor across departments.
+  expression: SUM("departments"."floor")
+  synonyms:
+  - total floor
+  - sum of floor
+- name: departments_floor_average
+  description: Average floor across departments.
+  expression: AVG("departments"."floor")
+  synonyms:
+  - average floor
+  - mean floor
+- name: doctors_years_experience_total
+  description: Total years experience across doctors.
+  expression: SUM("doctors"."years_experience")
+  synonyms:
+  - total years experience
+  - sum of years experience
+- name: doctors_years_experience_average
+  description: Average years experience across doctors.
+  expression: AVG("doctors"."years_experience")
+  synonyms:
+  - average years experience
+  - mean years experience
+- name: doctors_consultation_fee_total
+  description: Total consultation fee across doctors.
+  expression: SUM("doctors"."consultation_fee")
+  synonyms:
+  - total consultation fee
+  - sum of consultation fee
+- name: doctors_consultation_fee_average
+  description: Average consultation fee across doctors.
+  expression: AVG("doctors"."consultation_fee")
+  synonyms:
+  - average consultation fee
+  - mean consultation fee
+- name: admissions_total_bill_total
+  description: Total total bill across admissions.
+  expression: SUM("admissions"."total_bill")
+  synonyms:
+  - total total bill
+  - sum of total bill
+- name: admissions_total_bill_average
+  description: Average total bill across admissions.
+  expression: AVG("admissions"."total_bill")
+  synonyms:
+  - average total bill
+  - mean total bill
+- name: prescriptions_duration_days_total
+  description: Total duration days across prescriptions.
+  expression: SUM("prescriptions"."duration_days")
+  synonyms:
+  - total duration days
+  - sum of duration days
+- name: prescriptions_duration_days_average
+  description: Average duration days across prescriptions.
+  expression: AVG("prescriptions"."duration_days")
+  synonyms:
+  - average duration days
+  - mean duration days
+- name: prescriptions_refills_total
+  description: Total refills across prescriptions.
+  expression: SUM("prescriptions"."refills")
+  synonyms:
+  - total refills
+  - sum of refills
+- name: prescriptions_refills_average
+  description: Average refills across prescriptions.
+  expression: AVG("prescriptions"."refills")
+  synonyms:
+  - average refills
+  - mean refills
+business_rules:
+- name: Current Inpatients
+  description: Patients currently admitted (discharge_date IS NULL)
+  sql_expression: discharge_date IS NULL
+  keywords:
+  - currently admitted
+  - inpatient
+  - still in hospital
+- name: Uninsured Patients
+  description: Patients with no insurance provider
+  sql_expression: insurance_provider IS NULL
+  keywords:
+  - uninsured
+  - no insurance
+  - self pay
+- name: Experienced Doctors
+  description: Doctors with 15+ years of experience
+  sql_expression: years_experience >= 15
+  keywords:
+  - experienced doctor
+  - senior doctor
+  - veteran doctor
+- name: High-Cost Admissions
+  description: Admissions with total bill >= 10000
+  sql_expression: total_bill >= 10000
+  keywords:
+  - expensive admission
+  - high cost
+  - costly
+- name: ICU Patients
+  description: Patients admitted to the ICU ward
+  sql_expression: ward = 'ICU'
+  keywords:
+  - icu
+  - intensive care
+  - critical

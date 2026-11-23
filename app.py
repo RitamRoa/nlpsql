@@ -10,6 +10,10 @@ import tempfile
 import urllib.parse
 import sys
 import io
+import secrets
+import threading
+import time
+from http.cookies import SimpleCookie
 from decimal import Decimal
 if sys.platform == "win32":
     if hasattr(sys.stdout, "buffer"):
@@ -26,6 +30,8 @@ from core.loader import build_pipeline, list_available_schemas
 from core.schema_importer import import_schema
 from core.adapters.sqlite import SQLiteAdapter
 from core.voice import transcribe_local_audio
+from core.security import AccessPolicy, AuditLog
+from core.feedback import FeedbackStore
 
 MODEL_PATH = os.environ.get("MODEL_PATH", "SmolLM2-135M-text-to-sql.Q8_0.gguf")
 DB_ENGINE = os.environ.get("DB_ENGINE", "sqlite").lower()
@@ -59,6 +65,13 @@ pipeline, adapter, knowledge_engine = build_pipeline(
 uploaded_schemas: dict[str, str] = {}
 uploaded_relationships: dict[str, list[dict[str, str]]] = {}
 connected_databases: dict[str, tuple[str, str]] = {}
+access_policy = AccessPolicy.from_environment()
+audit_log = AuditLog()
+feedback_store = FeedbackStore()
+auth_sessions: dict[str, tuple[str, float]] = {}
+auth_sessions_lock = threading.Lock()
+write_approvals: dict[str, tuple[str, str | None, str, float]] = {}
+write_approvals_lock = threading.Lock()
 
 
 def _infer_relationships(schema) -> list[dict[str, str]]:
@@ -203,6 +216,15 @@ def _json_rows(rows) -> list[list]:
                 values.append(str(value))
         serialized.append(values)
     return serialized
+
+
+def _results_equivalent(left, right) -> bool:
+    return (
+        left.columns == right.columns
+        and sorted(repr(tuple(row)) for row in left.rows)
+        == sorted(repr(tuple(row)) for row in right.rows)
+        and left.truncated == right.truncated
+    )
 
 
 SCHEMA_SUGGESTIONS = {
@@ -1070,6 +1092,24 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     &nbsp;🗄 Query: <span id="tQ">-</span>
                     &nbsp;🔁 Attempts: <span id="tAtt">-</span>
                 </div>
+                <div id="qualityBadge" role="status"></div>
+                <div id="clarificationPanel" hidden></div>
+                <div id="featurePanel"></div>
+                <div class="result-toolbar">
+                    <button class="tool-btn" type="button" onclick="submitFeedback(1)">Helpful</button>
+                    <button class="tool-btn" type="button" onclick="submitFeedback(-1)">Not helpful</button>
+                    <button class="tool-btn" type="button" onclick="saveCorrection()">Save corrected SQL</button>
+                    <button class="tool-btn" type="button" onclick="runModelArena()">Model arena</button>
+                    <select id="targetDialect" class="chart-select" aria-label="Target SQL dialect">
+                        <option value="postgres">PostgreSQL</option>
+                        <option value="mysql">MySQL</option>
+                        <option value="duckdb">DuckDB</option>
+                        <option value="sqlite">SQLite</option>
+                    </select>
+                    <button class="tool-btn" type="button" onclick="transpileCurrentSql()">Transpile SQL</button>
+                    <button class="tool-btn" type="button" onclick="showSecurityReport()">Security tests</button>
+                </div>
+                <div id="feedbackStats"></div>
                 <div class="result-summary" id="summaryOut" aria-live="polite"></div>
                 <div class="result-toolbar" id="resultToolbar">
                     <div class="chart-heading">
@@ -1096,7 +1136,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
                     </div>
                     <div class="progress-msg" id="progressMsg" role="status" aria-live="polite"></div>
                     <div class="diff-panel" id="diffPanel"></div>
-                    <div class="sql-box"><label for="sqlOut" class="slabel">Editable SQL (read-only validation applies)</label><div class="sql-editor-wrap"><pre id="sqlHighlight" class="sql-highlight" aria-hidden="true"></pre><textarea id="sqlOut" class="sql-editor" spellcheck="false" oninput="updateSqlHighlight()" onscroll="syncSqlHighlight()"></textarea></div><div class="sql-actions"><button class="tool-btn" type="button" onclick="runEditedSql()">Execute edited SQL</button></div></div>
+                    <div class="sql-box"><label for="sqlOut" class="slabel">Editable SQL (SELECT execution is validated)</label><div class="sql-editor-wrap"><pre id="sqlHighlight" class="sql-highlight" aria-hidden="true"></pre><textarea id="sqlOut" class="sql-editor" spellcheck="false" oninput="updateSqlHighlight()" onscroll="syncSqlHighlight()"></textarea></div><div class="sql-actions"><button class="tool-btn" type="button" onclick="runEditedSql()">Execute edited SELECT</button><button class="tool-btn" type="button" onclick="previewWrite()">Preview safe write</button></div></div>
                     <div class="followups" id="followups"></div>
                     <div class="chart-panel" id="chartPanel">
                     <div class="chart-canvas" id="chartOut"></div>
@@ -1207,24 +1247,29 @@ let recentQueries = [];
 let favoriteQueries = [];
 let pinnedResults = [];
 let currentSchemaTables = [];
+let conversationTurns = [];
 
 const SUGGESTIONS = __SUGGESTIONS__;
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 async function init() {
+    await ensureAuthenticated();
     applyTheme(localStorage.getItem('nlpsql-theme-v2') || 'light');
     recentQueries = loadStoredList('nlpsql-history');
+    conversationTurns = loadStoredList('nlpsql-turns');
     favoriteQueries = loadStoredList('nlpsql-favorites');
     pinnedResults = loadStoredList('nlpsql-pins');
     renderSavedQueries();
     renderPins();
     const d = await fetch('/api/schemas').then(r => r.json());
+    if (d.error) throw new Error(d.error);
     allSchemas  = d.available_schemas || [];
     curSchema   = d.current_schema   || 'company';
     uploadedSet = new Set(d.uploaded_schemas || []);
     renderTabs();
     renderSuggestions(curSchema);
     await refreshSchemaPanel();
+    await loadFeedbackStats();
     const shared = new URLSearchParams(location.hash.slice(1));
     const sharedQuestion = shared.get('q');
     if (sharedQuestion) {
@@ -1232,6 +1277,20 @@ async function init() {
         if (sharedSchema && sharedSchema !== curSchema && allSchemas.includes(sharedSchema)) await switchSchema(sharedSchema);
         document.getElementById('prompt').value = sharedQuestion;
         runQuery();
+    }
+
+    async function ensureAuthenticated() {
+        const response = await fetch('/api/auth/status');
+        const status = await response.json();
+        if (!status.enabled) return;
+        const token = window.prompt('Enter your NLPSQL access token:');
+        if (!token) throw new Error('An access token is required.');
+        const login = await fetch('/api/auth/login', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({token})
+        });
+        const result = await login.json();
+        if (!login.ok) throw new Error(result.error || 'Authentication failed.');
     }
 }
 
@@ -1331,8 +1390,21 @@ async function runQuery() {
     try {
         const response = await fetch('/api/query_stream', {
             method:'POST', headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({prompt: q})
+            body: JSON.stringify({
+                prompt: q,
+                conversation_context: conversationTurns.slice(-4).map(turn =>
+                    `Previous question: ${turn.question}\nPrevious validated SQL: ${turn.sql}`
+                ).join('\n\n')
+            })
         });
+        if ((response.headers.get('Content-Type') || '').includes('application/json')) {
+            const data = await response.json();
+            if (data.clarification) {
+                showClarification(data.clarification);
+                return;
+            }
+            throw new Error(data.error || 'Query request failed.');
+        }
         if (!response.ok || !response.body) throw new Error(`Query request failed (${response.status})`);
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
@@ -1374,6 +1446,28 @@ function renderQueryResult(d, question) {
     document.getElementById('tInf').textContent = d.inference_time != null ? d.inference_time.toFixed(3)+'s' : '-';
     document.getElementById('tQ').textContent = d.query_time != null ? d.query_time.toFixed(4)+'s' : '-';
     document.getElementById('tAtt').textContent = d.attempts ?? '-';
+    const quality = document.getElementById('qualityBadge');
+    if (Number.isFinite(d.confidence)) {
+        const pct = Math.round(d.confidence * 100);
+        quality.textContent = d.abstained
+            ? `I'm not sure · candidates agree ${pct}%`
+            : `Confidence ${pct}% · ${d.confidence_candidates.filter(Boolean).length} candidate queries`;
+        quality.style.color = d.abstained || pct < 67 ? 'var(--err)' : 'var(--ok)';
+    } else {
+        quality.textContent = '';
+    }
+    document.getElementById('clarificationPanel').hidden = true;
+    const featureParts = [];
+    if (d.explanation) {
+        featureParts.push(`<strong>Why this query:</strong> ${esc(d.explanation.summary)}<br>Tables: ${d.explanation.tables.map(esc).join(', ') || 'none'}<br>Columns: ${d.explanation.columns.map(esc).join(', ') || 'none'}`);
+    }
+    if (d.cost_guard && d.cost_guard.warnings.length) {
+        featureParts.push(`<strong>Cost guard:</strong> ${d.cost_guard.warnings.map(esc).join(' ')}`);
+    }
+    if (d.feature_errors && Object.keys(d.feature_errors).length) {
+        featureParts.push(`<span style="color:var(--err)">Optional diagnostics: ${esc(Object.values(d.feature_errors).join('; '))}</span>`);
+    }
+    document.getElementById('featurePanel').innerHTML = featureParts.join('<br><br>');
     const out = document.getElementById('tableOut');
     const diff = document.getElementById('diffPanel');
     if (Array.isArray(d.sql_history) && d.sql_history.length > 1) {
@@ -1405,12 +1499,161 @@ function renderQueryResult(d, question) {
     document.getElementById('resultToolbar').style.display = 'flex';
     document.getElementById('chartPanel').style.display = d.rows.length ? 'block' : 'none';
     renderSummary();
+    if (d.narration) document.getElementById('summaryOut').textContent = d.narration;
     applyChartEdit(question);
     renderResultsTable();
     renderChart();
     renderFollowups();
     recordQuery(question, true);
+    conversationTurns = [...conversationTurns, {question, sql:d.sql || ''}].slice(-20);
+    saveStoredList('nlpsql-turns', conversationTurns);
+    loadFeedbackStats();
     updateShareLink(question, curSchema);
+}
+
+function showClarification(item) {
+    const panel = document.getElementById('clarificationPanel');
+    panel.hidden = false;
+    panel.innerHTML = `<strong>${esc(item.question)}</strong><div class="suggestions">${item.choices.map(choice =>
+        `<button class="sug-btn" type="button" data-choice="${esc(choice)}" onclick="resolveClarification(this.dataset.choice)">${esc(choice)}</button>`
+    ).join('')}</div>`;
+}
+
+function resolveClarification(choice) {
+    const prompt = document.getElementById('prompt');
+    prompt.value = `${prompt.value} (use ${choice})`;
+    document.getElementById('clarificationPanel').hidden = true;
+    runQuery();
+}
+
+async function submitFeedback(rating) {
+    if (!resultState) return;
+    try {
+        const response = await fetch('/api/feedback', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({question:resultState.question, sql:resultState.sql, rating})
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Feedback could not be saved.');
+        loadFeedbackStats();
+        setStatus('ok', 'Feedback saved');
+    } catch (error) {
+        setStatus('ok', error.message);
+    }
+}
+
+async function saveCorrection() {
+    if (!resultState) return;
+    const correctedSql = document.getElementById('sqlOut').value.trim();
+    try {
+        const response = await fetch('/api/feedback', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({
+                question:resultState.question,
+                sql:resultState.sql,
+                rating:-1,
+                corrected_sql:correctedSql
+            })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Correction was rejected.');
+        loadFeedbackStats();
+        setStatus('ok', 'Correction validated and learned');
+    } catch (error) {
+        setStatus('ok', error.message);
+    }
+}
+
+async function loadFeedbackStats() {
+    try {
+        const response = await fetch('/api/feedback_stats');
+        const stats = await response.json();
+        if (!response.ok) throw new Error(stats.error || 'Could not load feedback stats.');
+        const before = Math.round((stats.before_accuracy || 0) * 100);
+        const after = Math.round((stats.after_accuracy || 0) * 100);
+        document.getElementById('feedbackStats').innerHTML =
+            `<small>Feedback learning · ${stats.measured || 0} corrected-query replays · not a held-out benchmark</small>` +
+            `<div>Before ${before}% <progress max="100" value="${before}"></progress> After ${after}% <progress max="100" value="${after}"></progress></div>`;
+    } catch (error) {
+        document.getElementById('feedbackStats').textContent = error.message;
+    }
+}
+
+async function runModelArena() {
+    const question = resultState?.question || document.getElementById('prompt').value.trim();
+    if (!question) return;
+    const referenceSql = window.prompt('Optional reference SQL for execution-accuracy scoring (leave blank for execution-success ranking):') || '';
+    try {
+        const response = await fetch('/api/model_arena', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({question, reference_sql:referenceSql || null})
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Model arena failed.');
+        document.getElementById('featurePanel').innerHTML =
+            `<strong>Model arena</strong><br>${esc(data.score_definition || data.message || '')}<ol>` +
+            (data.leaderboard || []).map(item =>
+                `<li>${esc(item.model)} · ${item.execution_accuracy === null ? (item.execution_success ? 'executable' : 'failed') : `${Math.round(item.execution_accuracy * 100)}% exact result match`} · ${item.elapsed_seconds ?? '-'}s${item.error ? ` · ${esc(item.error)}` : ''}<pre>${esc(item.sql || '')}</pre></li>`
+            ).join('') + '</ol>';
+    } catch (error) {
+        document.getElementById('featurePanel').textContent = error.message;
+    }
+}
+
+async function transpileCurrentSql() {
+    try {
+        const response = await fetch('/api/transpile', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({
+                sql:document.getElementById('sqlOut').value,
+                dialect:document.getElementById('targetDialect').value
+            })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'SQL transpilation failed.');
+        document.getElementById('featurePanel').innerHTML =
+            `<strong>${esc(data.dialect)} SQL</strong><pre>${esc(data.sql)}</pre>`;
+    } catch (error) {
+        document.getElementById('featurePanel').textContent = error.message;
+    }
+}
+
+async function showSecurityReport() {
+    try {
+        const response = await fetch('/api/security_report');
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Security report failed.');
+        document.getElementById('featurePanel').innerHTML =
+            `<strong>Safety regression suite</strong><br>${data.blocked}/${data.total} blocked (${Math.round(data.block_rate * 100)}%)<ul>` +
+            data.cases.map(item => `<li>${esc(item.case)}: ${item.blocked ? 'blocked' : 'NOT BLOCKED'}</li>`).join('') +
+            '</ul>';
+    } catch (error) {
+        document.getElementById('featurePanel').textContent = error.message;
+    }
+}
+
+async function previewWrite() {
+    const sql = document.getElementById('sqlOut').value.trim();
+    try {
+        const response = await fetch('/api/preview_write', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({sql})
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Write preview was rejected.');
+        document.getElementById('featurePanel').innerHTML =
+            `<strong>Rolled-back write preview</strong><pre>${esc(JSON.stringify(data.preview, null, 2))}</pre>`;
+        if (!window.confirm(`Preview affects ${data.preview.affected_rows} row(s). Commit this change now?`)) return;
+        const approval = await fetch('/api/approve_write', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({approval_token:data.approval_token})
+        });
+        const committed = await approval.json();
+        if (!approval.ok) throw new Error(committed.error || 'Write approval failed.');
+        document.getElementById('featurePanel').innerHTML += '<br><strong>Approved write committed.</strong>';
+    } catch (error) {
+        document.getElementById('featurePanel').textContent = error.message;
+    }
 }
 
 function showProgress(message) {
@@ -2491,10 +2734,45 @@ init();
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
+    current_role: str | None = None
+
+    def _authenticate(self) -> str:
+        if not access_policy.enabled:
+            return "local_operator"
+        authorization = self.headers.get("Authorization", "")
+        token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else None
+        role = access_policy.role_for_token(token)
+        if role:
+            return role
+        cookie = SimpleCookie()
+        cookie.load(self.headers.get("Cookie", ""))
+        morsel = cookie.get("nlpsql_session")
+        if morsel:
+            with auth_sessions_lock:
+                session = auth_sessions.get(morsel.value)
+                if session and session[1] > time.time():
+                    return session[0]
+                auth_sessions.pop(morsel.value, None)
+        raise PermissionError("Authentication required. Sign in with an access token.")
+
+    def _visible_schema(self):
+        role = access_policy.authorize_schema(self.current_role, current_schema_name)
+        return access_policy.restrict_schema(adapter.get_schema(), role)
 
     def do_GET(self):
         global current_schema_name, current_db_path, adapter
         url_path = urllib.parse.urlparse(self.path).path
+
+        if url_path == "/api/auth/status":
+            self._json({"enabled": access_policy.enabled})
+            return
+        if url_path.startswith("/api/"):
+            try:
+                self.current_role = self._authenticate()
+                access_policy.authorize_schema(self.current_role, current_schema_name)
+            except PermissionError as error:
+                self._json({"error": str(error)}, 401)
+                return
 
         if url_path in ("/", "/index.html"):
             page = (
@@ -2505,17 +2783,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send(200, "text/html; charset=utf-8", page.encode("utf-8"))
 
         elif url_path == "/api/schemas":
+            visible_schema = self._visible_schema()
+            permitted_schemas = {
+                name.lower()
+                for name in access_policy.role(self.current_role).schemas
+            }
             data = {
-                "available_schemas": list_available_schemas() + sorted(set(uploaded_schemas) | set(connected_databases)),
+                "available_schemas": [
+                    name for name in (
+                        list_available_schemas()
+                        + sorted(set(uploaded_schemas) | set(connected_databases))
+                    )
+                    if not access_policy.enabled
+                    or "*" in access_policy.role(self.current_role).schemas
+                    or name.lower() in permitted_schemas
+                ],
                 "current_schema": current_schema_name,
                 "current_db_path": current_db_path,
                 "uploaded_schemas": sorted(uploaded_schemas.keys()),
-                "tables": [t.name for t in adapter.get_schema().tables],
+                "tables": [t.name for t in visible_schema.tables],
             }
             self._json(data)
 
         elif url_path == "/api/schema_detail":
-            schema = adapter.get_schema()
+            schema = self._visible_schema()
             fk_cols = set()
             relationships = []
             for tbl in schema.tables:
@@ -2561,15 +2852,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif url_path == "/api/sample":
             params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
             table_name = params.get("table", [""])[0]
-            schema = adapter.get_schema()
+            role = access_policy.authorize_schema(self.current_role, current_schema_name)
+            schema = self._visible_schema()
             if not any(table.name == table_name for table in schema.tables):
                 self._json({"error": "Unknown table."}, 404)
                 return
+            table = next(table for table in schema.tables if table.name == table_name)
+            table_options = next(
+                (options for name, options in role.tables.items() if name.lower() == table_name.lower()),
+                {},
+            )
+            sample_columns = [
+                column.name for column in table.columns
+                if not table_options.get("columns")
+                or column.name.lower() in {name.lower() for name in table_options["columns"]}
+            ]
+            if not sample_columns:
+                self._json({"error": "No columns are visible for this table."}, 403)
+                return
             quoted_table = '"' + table_name.replace('"', '""') + '"'
+            projection = ", ".join('"' + name.replace('"', '""') + '"' for name in sample_columns)
+            sql = f"SELECT {projection} FROM {quoted_table} LIMIT 10;"
             try:
-                result = adapter.execute_readonly(f"SELECT * FROM {quoted_table} LIMIT 10;")
+                sql = access_policy.enforce_query(
+                    sql, schema, role, adapter.dialect(), full_schema=adapter.get_schema()
+                )
+                result = adapter.execute_readonly(sql)
+                result = access_policy.mask_result(result, role, sql)
             except Exception as error:
-                self._json({"error": str(error)}, 400)
+                self._json({"error": str(error)}, 403)
                 return
             self._json({"columns": result.columns, "rows": _json_rows(result.rows)})
 
@@ -2584,6 +2895,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "model": os.environ.get("WHISPER_MODEL", "tiny"),
             })
 
+        elif url_path == "/api/feedback_stats":
+            self._json(feedback_store.stats(current_schema_name))
+
+        elif url_path == "/api/security_report":
+            from core.security_redteam import run_redteam_suite
+            self._json(run_redteam_suite(self._visible_schema(), adapter.dialect()))
+
         else:
             self._send(404, "text/plain", b"Not Found")
 
@@ -2591,6 +2909,41 @@ class DashboardHandler(BaseHTTPRequestHandler):
         global current_schema_name, current_db_path, current_db_engine, DB_ENGINE
         global pipeline, adapter, knowledge_engine, provider, uploaded_relationships
         url_path = urllib.parse.urlparse(self.path).path
+        if url_path == "/api/auth/login":
+            body = self._read_body()
+            if body is None:
+                return
+            params = self._parse_json(body)
+            if params is None:
+                return
+            if not access_policy.enabled:
+                self._json({"status": "ok", "enabled": False})
+                return
+            token = params.get("token")
+            role = access_policy.role_for_token(token if isinstance(token, str) else None)
+            if not role:
+                self._json({"error": "Invalid access token."}, 401)
+                return
+            session = secrets.token_urlsafe(32)
+            with auth_sessions_lock:
+                auth_sessions[session] = (role, time.time() + 8 * 60 * 60)
+            self._json(
+                {"status": "ok", "role": role},
+                headers={"Set-Cookie": f"nlpsql_session={session}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800"},
+            )
+            return
+        if url_path.startswith("/api/"):
+            try:
+                self.current_role = self._authenticate()
+                if url_path not in {
+                    "/api/switch_schema", "/api/connect_database",
+                    "/api/upload_schema", "/api/preview_upload",
+                    "/api/ocr", "/api/feedback_stats", "/api/security_report",
+                }:
+                    access_policy.authorize_schema(self.current_role, current_schema_name)
+            except PermissionError as error:
+                self._json({"error": str(error)}, 401)
+                return
         body = self._read_body()
         if body is None:
             return
@@ -2615,12 +2968,229 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json({"text": text})
             return
 
+        if url_path == "/api/feedback":
+            params = self._parse_json(body)
+            if params is None:
+                return
+            question = params.get("question")
+            sql = params.get("sql")
+            rating = params.get("rating")
+            corrected_sql = params.get("corrected_sql")
+            if (
+                not isinstance(question, str)
+                or not isinstance(sql, str)
+                or not isinstance(rating, int)
+                or isinstance(rating, bool)
+                or rating not in {-1, 1}
+            ):
+                self._json({"error": "Provide question, SQL, and rating (1 or -1)."}, 400)
+                return
+            if corrected_sql is not None:
+                if not isinstance(corrected_sql, str) or not corrected_sql.strip():
+                    self._json({"error": "Corrected SQL must be a non-empty string."}, 400)
+                    return
+                try:
+                    role = access_policy.authorize_schema(self.current_role, current_schema_name)
+                    visible_schema = self._visible_schema()
+                    corrected_sql = access_policy.enforce_query(
+                        corrected_sql, visible_schema, role, adapter.dialect(),
+                        full_schema=adapter.get_schema(),
+                    )
+                    from core.validator import validate
+                    validate(corrected_sql, adapter.get_schema(), adapter.dialect())
+                    reference_result = access_policy.mask_result(
+                        adapter.execute_readonly(corrected_sql), role, corrected_sql
+                    )
+                except Exception as error:
+                    self._json({"error": f"Corrected SQL was not accepted: {error}"}, 400)
+                    return
+                before_match = False
+                try:
+                    original_sql = access_policy.enforce_query(
+                        sql, visible_schema, role, adapter.dialect(),
+                        full_schema=adapter.get_schema(),
+                    )
+                    validate(original_sql, adapter.get_schema(), adapter.dialect())
+                    original_result = access_policy.mask_result(
+                        adapter.execute_readonly(original_sql), role, original_sql
+                    )
+                    before_match = _results_equivalent(original_result, reference_result)
+                except Exception:
+                    before_match = False
+                retriever = getattr(
+                    getattr(pipeline, "generator", None), "few_shot_retriever", None
+                )
+                if retriever:
+                    retriever.add_example(question, corrected_sql)
+                learned_result = pipeline.ask(
+                    question,
+                    query_guard=lambda candidate, _schema: access_policy.enforce_query(
+                        candidate, visible_schema, role, adapter.dialect(),
+                        full_schema=_schema,
+                    ),
+                    result_transform=lambda result, candidate: access_policy.mask_result(
+                        result, role, candidate
+                    ),
+                    schema_override=visible_schema,
+                )
+                after_match = (
+                    learned_result.result is not None
+                    and _results_equivalent(learned_result.result, reference_result)
+                )
+                feedback_store.add(
+                    current_schema_name, question, corrected_sql, 1, corrected=True,
+                    before_match=before_match, after_match=after_match,
+                )
+            else:
+                feedback_store.add(current_schema_name, question, sql, rating)
+            audit_log.record(
+                self.current_role, current_schema_name, "feedback", "accepted",
+                question=question, sql=corrected_sql or sql,
+            )
+            self._json({"status": "ok", "stats": feedback_store.stats(current_schema_name)})
+            return
+
+        if url_path == "/api/transpile":
+            params = self._parse_json(body)
+            if params is None:
+                return
+            sql = params.get("sql")
+            target = params.get("dialect")
+            if not isinstance(sql, str) or target not in {"sqlite", "postgres", "mysql", "duckdb"}:
+                self._json({"error": "Provide SQL and a supported target dialect."}, 400)
+                return
+            try:
+                role = access_policy.authorize_schema(self.current_role, current_schema_name)
+                visible_schema = self._visible_schema()
+                guarded_sql = access_policy.enforce_query(
+                    sql, visible_schema, role, adapter.dialect(),
+                    full_schema=adapter.get_schema(),
+                )
+                from core.query_tools import transpile_sql
+                translated_sql = transpile_sql(
+                    guarded_sql, adapter.dialect(), target
+                )
+            except Exception as error:
+                self._json({"error": str(error)}, 400)
+                return
+            self._json({"sql": translated_sql, "dialect": target})
+            return
+
+        if url_path == "/api/model_arena":
+            params = self._parse_json(body)
+            if params is None:
+                return
+            question = params.get("question")
+            reference_sql = params.get("reference_sql")
+            if not isinstance(question, str) or not question.strip():
+                self._json({"error": "Provide a question for the model arena."}, 400)
+                return
+            try:
+                role = access_policy.authorize_schema(self.current_role, current_schema_name)
+                visible_schema = self._visible_schema()
+                from core.model_arena import run_model_arena
+                report = run_model_arena(
+                    question,
+                    adapter,
+                    access_policy=access_policy,
+                    role_policy=role,
+                    schema=visible_schema,
+                    reference_sql=reference_sql if isinstance(reference_sql, str) else None,
+                )
+                audit_log.record(
+                    self.current_role, current_schema_name, "model_arena", "completed",
+                    question=question,
+                )
+                self._json(report)
+            except Exception as error:
+                self._json({"error": str(error)}, 400)
+            return
+
+        if url_path == "/api/preview_write":
+            params = self._parse_json(body)
+            if params is None:
+                return
+            sql = params.get("sql")
+            try:
+                role = access_policy.authorize_schema(self.current_role, current_schema_name)
+                role_policy = access_policy.role(role)
+                if not isinstance(adapter, SQLiteAdapter):
+                    raise PermissionError("Approval-based writes are currently limited to in-memory SQLite.")
+                if not isinstance(sql, str) or not sql.strip():
+                    raise ValueError("Provide one INSERT or UPDATE statement.")
+                visible_schema = self._visible_schema()
+                guarded_sql = access_policy.enforce_write(
+                    sql, visible_schema, role_policy, adapter.dialect()
+                )
+                preview = adapter.approved_write(guarded_sql, commit=False)
+                preview = self._mask_write_preview(preview, role_policy)
+                token = secrets.token_urlsafe(24)
+                with write_approvals_lock:
+                    write_approvals[token] = (
+                        current_schema_name, role, guarded_sql, time.time() + 120
+                    )
+                audit_log.record(
+                    role, current_schema_name, "write_preview", "rolled_back", sql=guarded_sql
+                )
+                self._json({"preview": preview, "approval_token": token, "expires_in": 120})
+            except Exception as error:
+                audit_log.record(
+                    self.current_role, current_schema_name, "write_preview", "rejected",
+                    sql=sql if isinstance(sql, str) else None,
+                )
+                self._json({"error": str(error)}, 400)
+            return
+
+        if url_path == "/api/approve_write":
+            params = self._parse_json(body)
+            if params is None:
+                return
+            token = params.get("approval_token")
+            if not isinstance(token, str):
+                self._json({"error": "An approval token is required."}, 400)
+                return
+            with write_approvals_lock:
+                approval = write_approvals.pop(token, None)
+            if not approval or approval[3] < time.time():
+                self._json({"error": "Approval token is invalid, expired, or already used."}, 400)
+                return
+            schema_name, approval_role, sql, _expires = approval
+            try:
+                if schema_name != current_schema_name or approval_role != self.current_role:
+                    raise PermissionError("Approval is bound to the schema and role that created it.")
+                role_policy = access_policy.authorize_schema(self.current_role, current_schema_name)
+                access_policy.enforce_write(
+                    sql, self._visible_schema(), role_policy, adapter.dialect()
+                )
+                if not isinstance(adapter, SQLiteAdapter):
+                    raise PermissionError("Approval-based writes are limited to in-memory SQLite.")
+                preview = adapter.approved_write(sql, commit=True)
+                preview = self._mask_write_preview(preview, role_policy)
+                if knowledge_engine:
+                    knowledge_engine.value_index.clear()
+                    knowledge_engine._build_value_index()
+                audit_log.record(
+                    self.current_role, current_schema_name, "write_approval", "committed", sql=sql
+                )
+                self._json({"status": "committed", "preview": preview})
+            except Exception as error:
+                audit_log.record(
+                    self.current_role, current_schema_name, "write_approval", "rejected", sql=sql
+                )
+                self._json({"error": str(error)}, 400)
+            return
+
         if url_path == "/api/switch_schema":
             params = self._parse_json(body)
             if params is None:
                 return
             new_schema = params.get("schema", "company")
             new_path   = params.get("path")
+            try:
+                access_policy.authorize_schema(self.current_role, new_schema)
+            except PermissionError as error:
+                self._json({"error": str(error)}, 403)
+                return
 
             if new_schema in connected_databases and not new_path:
                 engine, db_path = connected_databases[new_schema]
@@ -2706,6 +3276,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if url_path == "/api/connect_database":
             params = self._parse_json(body)
             if params is None:
+                return
+            if access_policy.enabled and "*" not in access_policy.role(self.current_role).schemas:
+                self._json({"error": "Database connections require a role with wildcard schema access."}, 403)
                 return
             engine = str(params.get("engine", "")).lower()
             is_local_file = engine in {"sqlite", "duckdb"}
@@ -2843,6 +3416,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             while tab_name in existing:
                 tab_name = f"{base}_{idx}"
                 idx += 1
+            try:
+                access_policy.authorize_schema(self.current_role, tab_name)
+            except PermissionError as error:
+                self._json({"error": str(error)}, 403)
+                return
 
             uploaded_schemas[tab_name] = seed_sql
             uploaded_relationships[tab_name] = relationships
@@ -2879,7 +3457,35 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json({"error": "Missing 'prompt' parameter"}, 400)
                 return
 
-            print(f"[{current_schema_name}] {prompt}")
+            try:
+                role = access_policy.authorize_schema(self.current_role, current_schema_name)
+                visible_schema = self._visible_schema()
+                conversation_context = params.get("conversation_context", "")
+                if not isinstance(conversation_context, str) or len(conversation_context) > 8000:
+                    self._json({"error": "Conversation context must be a string under 8 KB."}, 400)
+                    return
+            except (PermissionError, ValueError) as error:
+                self._json({"error": str(error)}, 403)
+                return
+            print(f"[{current_schema_name}] query received")
+
+            semantic_layer = getattr(
+                getattr(knowledge_engine, "semantic_layer", None), "tables", {}
+            )
+            if semantic_layer:
+                from core.clarification import find_ambiguous_terms
+                layer = knowledge_engine.semantic_layer
+                ambiguities = find_ambiguous_terms(prompt, layer)
+                if ambiguities:
+                    self._json({"clarification": ambiguities[0], "error": None})
+                    return
+
+            query_guard = lambda sql, _schema: access_policy.enforce_query(
+                sql, visible_schema, role, adapter.dialect(), full_schema=_schema
+            )
+            result_transform = lambda result, sql: access_policy.mask_result(
+                result, role, sql
+            )
             if url_path == "/api/query_stream":
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -2900,11 +3506,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         client_connected = False
                         print(f"Query progress client disconnected: {error}", file=sys.stderr)
 
-                out = pipeline.ask(prompt, on_progress=send_progress)
+                out = pipeline.ask(
+                    prompt,
+                    on_progress=send_progress,
+                    conversation_context=conversation_context or None,
+                    query_guard=query_guard,
+                    result_transform=result_transform,
+                    schema_override=visible_schema,
+                )
             else:
-                out = pipeline.ask(prompt)
+                out = pipeline.ask(
+                    prompt,
+                    conversation_context=conversation_context or None,
+                    query_guard=query_guard,
+                    result_transform=result_transform,
+                    schema_override=visible_schema,
+                )
             inf_t = sum(v for k, v in out.timings.items() if k.startswith("generate"))
             q_t   = sum(v for k, v in out.timings.items() if k.startswith("execute"))
+            audit_log.record(
+                self.current_role,
+                current_schema_name,
+                "query",
+                "abstained" if out.abstained else "completed" if not out.error else "rejected",
+                question=prompt,
+                sql=out.sql,
+            )
             data = {
                 "sql":            out.sql,
                 "sql_history":    out.sql_history,
@@ -2919,6 +3546,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "is_translated":  out.is_translated,
                 "translated_query": out.question if out.is_translated else None,
                 "original_query": out.original_question,
+                "confidence": out.confidence,
+                "confidence_agreement": out.confidence_agreement,
+                "confidence_candidates": out.confidence_candidates,
+                "abstained": out.abstained,
+                "explanation": out.explanation,
+                "narration": out.narration,
+                "cost_guard": out.cost_guard,
+                "feature_errors": out.feature_errors,
             }
             if url_path == "/api/query_stream":
                 if client_connected:
@@ -2940,8 +3575,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             from core.validator import ValidationError, validate
             from core.adapters.base import ExecutionError
             try:
+                role = access_policy.authorize_schema(self.current_role, current_schema_name)
+                visible_schema = self._visible_schema()
+                sql = access_policy.enforce_query(
+                    sql, visible_schema, role, adapter.dialect(),
+                    full_schema=adapter.get_schema(),
+                )
+            except (PermissionError, ValidationError, ValueError) as error:
+                self._json({"error": str(error)}, 403)
+                return
+            try:
                 validate(sql, adapter.get_schema(), adapter.dialect())
                 result = adapter.execute_readonly(sql)
+                result = access_policy.mask_result(result, role, sql)
             except (ValidationError, ExecutionError) as error:
                 self._json({"error": str(error)}, 400)
                 return
@@ -2972,14 +3618,43 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json({"error": "Invalid JSON"}, 400)
             return None
 
-    def _json(self, data: dict, status: int = 200):
-        self._send(status, "application/json", json.dumps(data).encode("utf-8"))
+    def _json(
+        self,
+        data: dict,
+        status: int = 200,
+        headers: dict | None = None,
+    ):
+        self._send(
+            status,
+            "application/json",
+            json.dumps(data, default=str).encode("utf-8"),
+            headers=headers,
+        )
 
-    def _send(self, status: int, content_type: str, body: bytes):
+    def _send(self, status: int, content_type: str, body: bytes, headers: dict | None = None):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
+
+    @staticmethod
+    def _mask_write_preview(preview: dict, role_policy) -> dict:
+        masked_columns = {
+            name.lower()
+            for options in role_policy.tables.values()
+            for name in options.get("masked_columns", [])
+        }
+        for key in ("before", "after"):
+            preview[key] = [
+                [
+                    "***" if column.lower() in masked_columns else value
+                    for column, value in zip(preview["columns"], row)
+                ]
+                for row in preview[key]
+            ]
+        return preview
 
     def log_message(self, *args):
         pass  # Suppress default access log

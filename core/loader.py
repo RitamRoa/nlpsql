@@ -3,7 +3,9 @@ from .adapters.base import DBAdapter
 from .adapters.sqlite import SQLiteAdapter
 from .adapters.duckdb import DuckDBAdapter
 from .knowledge import DomainKnowledgeEngine
+from .semantic_layer import SemanticLayer, load_semantic_layer
 from .few_shot import FewShotRetriever, FewShotExample
+from .feedback import FeedbackStore
 from .retriever import SchemaRetriever
 from .agents.classifier import QueryClassifier
 from .agents.critic import SemanticCritic
@@ -13,6 +15,7 @@ from .providers.mock import MockProvider
 from .pipeline import Pipeline
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data")
+SEMANTIC_DIR = os.path.join(DATA_DIR, "semantic")
 
 
 def list_available_schemas() -> list[str]:
@@ -249,136 +252,17 @@ def _get_few_shot_examples(schema_name: str) -> list[FewShotExample]:
     return []
 
 
-def _register_knowledge_rules(
+def _load_schema_semantic_layer(
     schema_name: str,
-    knowledge_engine: DomainKnowledgeEngine,
     db_path: str | None,
-):
-    """Registers domain-specific business rules for each schema."""
+) -> SemanticLayer:
+    """Load the editable semantic catalog for a built-in schema, if present."""
     if db_path:
-        return  # Skip for physical database files (rules are schema-specific)
-
-    if schema_name == "company":
-        knowledge_engine.register_rule(
-            keywords=["top earners", "high earners", "highest paid", "high salary"],
-            name="High Earner",
-            description="Employees with salary >= 90000",
-            sql_expression="salary >= 90000",
-        )
-        knowledge_engine.register_rule(
-            keywords=["recent sales", "latest sales", "new sales"],
-            name="Recent Sales",
-            description="Sales made in March 2024 or later",
-            sql_expression="sale_date >= '2024-03-01'",
-        )
-        knowledge_engine.register_rule(
-            keywords=["remote", "work from home", "wfh"],
-            name="Remote Employees",
-            description="Employees working remotely",
-            sql_expression="is_remote = 1",
-        )
-        knowledge_engine.register_rule(
-            keywords=["top performer", "best performer", "high performer", "excellent rating"],
-            name="Top Performer",
-            description="Employees with performance rating >= 4.5",
-            sql_expression="performance_rating >= 4.5",
-        )
-        knowledge_engine.register_rule(
-            keywords=["active project", "ongoing project"],
-            name="Active Projects",
-            description="Projects with status = 'Active'",
-            sql_expression="status = 'Active'",
-        )
-
-    elif schema_name == "ecommerce":
-        knowledge_engine.register_rule(
-            keywords=["vip", "top tier", "gold", "gold customer", "premium customer"],
-            name="Gold Customer",
-            description="Customers with Gold loyalty tier",
-            sql_expression="loyalty_tier = 'Gold'",
-        )
-        knowledge_engine.register_rule(
-            keywords=["new customer", "recent signup", "recently joined"],
-            name="New Customer",
-            description="Customers who signed up in 2024 or later",
-            sql_expression="signup_date >= '2024-01-01'",
-        )
-        knowledge_engine.register_rule(
-            keywords=["cancelled order", "failed order"],
-            name="Cancelled Orders",
-            description="Orders with status = 'Cancelled'",
-            sql_expression="status = 'Cancelled'",
-        )
-        knowledge_engine.register_rule(
-            keywords=["low stock", "running out", "out of stock"],
-            name="Low Stock Products",
-            description="Products with stock_quantity < 20",
-            sql_expression="stock_quantity < 20",
-        )
-        knowledge_engine.register_rule(
-            keywords=["top rated", "highly rated", "best product"],
-            name="Highly Rated Products",
-            description="Products with rating >= 4.5",
-            sql_expression="rating >= 4.5",
-        )
-
-    elif schema_name == "university":
-        knowledge_engine.register_rule(
-            keywords=["dean's list", "honor roll", "high gpa", "honor student", "top student"],
-            name="Dean's List",
-            description="Students with GPA >= 3.7",
-            sql_expression="gpa >= 3.7",
-        )
-        knowledge_engine.register_rule(
-            keywords=["failing", "failed", "poor grade", "f grade"],
-            name="Failing Students",
-            description="Students with grade F in enrollments",
-            sql_expression="grade = 'F'",
-        )
-        knowledge_engine.register_rule(
-            keywords=["senior student", "final year", "graduating"],
-            name="Senior Students",
-            description="Students in their 4th year (year = 4)",
-            sql_expression="year = 4",
-        )
-        knowledge_engine.register_rule(
-            keywords=["full class", "oversubscribed", "waitlist"],
-            name="Full Courses",
-            description="Courses at or above max enrollment",
-            sql_expression="(SELECT COUNT(*) FROM enrollments WHERE course_id = courses.id) >= max_enrollment",
-        )
-
-    elif schema_name == "healthcare":
-        knowledge_engine.register_rule(
-            keywords=["currently admitted", "inpatient", "still in hospital"],
-            name="Current Inpatients",
-            description="Patients currently admitted (discharge_date IS NULL)",
-            sql_expression="discharge_date IS NULL",
-        )
-        knowledge_engine.register_rule(
-            keywords=["uninsured", "no insurance", "self pay"],
-            name="Uninsured Patients",
-            description="Patients with no insurance provider",
-            sql_expression="insurance_provider IS NULL",
-        )
-        knowledge_engine.register_rule(
-            keywords=["experienced doctor", "senior doctor", "veteran doctor"],
-            name="Experienced Doctors",
-            description="Doctors with 15+ years of experience",
-            sql_expression="years_experience >= 15",
-        )
-        knowledge_engine.register_rule(
-            keywords=["expensive admission", "high cost", "costly"],
-            name="High-Cost Admissions",
-            description="Admissions with total bill >= 10000",
-            sql_expression="total_bill >= 10000",
-        )
-        knowledge_engine.register_rule(
-            keywords=["icu", "intensive care", "critical"],
-            name="ICU Patients",
-            description="Patients admitted to the ICU ward",
-            sql_expression="ward = 'ICU'",
-        )
+        return SemanticLayer()
+    path = os.path.join(SEMANTIC_DIR, f"{schema_name}.yaml")
+    if not os.path.exists(path):
+        return SemanticLayer()
+    return load_semantic_layer(path)
 
 
 def build_pipeline(
@@ -391,16 +275,20 @@ def build_pipeline(
     adapter = create_adapter(
         db_engine=db_engine, db_path=db_path, schema_name=schema_name
     )
-    knowledge_engine = DomainKnowledgeEngine(adapter)
-
-    # Register domain-specific business rules
-    _register_knowledge_rules(schema_name, knowledge_engine, db_path)
+    try:
+        semantic_layer = _load_schema_semantic_layer(schema_name, db_path)
+        semantic_layer.validate_against(adapter.get_schema())
+    except Exception:
+        adapter.close()
+        raise
+    knowledge_engine = DomainKnowledgeEngine(adapter, semantic_layer=semantic_layer)
 
     llm = provider or MockProvider()
     few_shot_examples = _get_few_shot_examples(schema_name)
+    few_shot_examples.extend(FeedbackStore().examples(schema_name))
     few_shot = FewShotRetriever(examples=few_shot_examples or None, top_k=2)
     drafter = SQLDrafter(provider=llm, few_shot_retriever=few_shot)
-    retriever = SchemaRetriever()
+    retriever = SchemaRetriever(semantic_layer=semantic_layer)
 
     pipeline = Pipeline(
         adapter=adapter,
@@ -409,6 +297,7 @@ def build_pipeline(
         knowledge_engine=knowledge_engine,
         classifier=QueryClassifier(),
         critic=SemanticCritic(),
+        confidence_samples=int(os.environ.get("NLPSQL_CONFIDENCE_SAMPLES", "3")),
     )
 
     return pipeline, adapter, knowledge_engine

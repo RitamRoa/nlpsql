@@ -1,0 +1,207 @@
+version: 1
+tables:
+  departments:
+    description: Records for departments.
+    columns:
+      id:
+        description: Unique identifier for this departments record.
+      name:
+        description: Name (text).
+      building:
+        description: Building (text).
+      head_instructor_id:
+        description: Head instructor id (integer).
+  instructors:
+    description: Records for instructors.
+    columns:
+      id:
+        description: Unique identifier for this instructors record.
+      name:
+        description: Name (text).
+      department_id:
+        description: Identifier of the related departments record.
+      title:
+        description: Title (text).
+      email:
+        description: Email (text).
+      office:
+        description: Office (text).
+  courses:
+    description: Records for courses.
+    columns:
+      id:
+        description: Unique identifier for this courses record.
+      code:
+        description: Code (text).
+      title:
+        description: Title (text).
+      credits:
+        description: Credits (integer).
+      department_id:
+        description: Identifier of the related departments record.
+      instructor_id:
+        description: Identifier of the related instructors record.
+      max_enrollment:
+        description: Max enrollment (integer).
+  students:
+    description: Records for students.
+    columns:
+      id:
+        description: Unique identifier for this students record.
+      name:
+        description: Name (text).
+      email:
+        description: Email (text).
+      major:
+        description: Major (text).
+      year:
+        description: Year (integer).
+      gpa:
+        description: Gpa (real).
+      enrollment_date:
+        description: Enrollment date (text).
+  enrollments:
+    description: Records for enrollments.
+    columns:
+      id:
+        description: Unique identifier for this enrollments record.
+      course_id:
+        description: Identifier of the related courses record.
+      student_id:
+        description: Identifier of the related students record.
+      grade:
+        description: Grade (text).
+      semester:
+        description: Semester (text).
+      attendance_pct:
+        description: Attendance pct (real).
+  scholarships:
+    description: Records for scholarships.
+    columns:
+      id:
+        description: Unique identifier for this scholarships record.
+      student_id:
+        description: Identifier of the related students record.
+      name:
+        description: Name (text).
+      amount:
+        description: Amount (real).
+      awarded_year:
+        description: Awarded year (integer).
+metrics:
+- name: courses_credits_total
+  description: Total credits across courses.
+  expression: SUM("courses"."credits")
+  synonyms:
+  - total credits
+  - sum of credits
+- name: courses_credits_average
+  description: Average credits across courses.
+  expression: AVG("courses"."credits")
+  synonyms:
+  - average credits
+  - mean credits
+- name: courses_max_enrollment_total
+  description: Total max enrollment across courses.
+  expression: SUM("courses"."max_enrollment")
+  synonyms:
+  - total max enrollment
+  - sum of max enrollment
+- name: courses_max_enrollment_average
+  description: Average max enrollment across courses.
+  expression: AVG("courses"."max_enrollment")
+  synonyms:
+  - average max enrollment
+  - mean max enrollment
+- name: students_year_total
+  description: Total year across students.
+  expression: SUM("students"."year")
+  synonyms:
+  - total year
+  - sum of year
+- name: students_year_average
+  description: Average year across students.
+  expression: AVG("students"."year")
+  synonyms:
+  - average year
+  - mean year
+- name: students_gpa_total
+  description: Total gpa across students.
+  expression: SUM("students"."gpa")
+  synonyms:
+  - total gpa
+  - sum of gpa
+- name: students_gpa_average
+  description: Average gpa across students.
+  expression: AVG("students"."gpa")
+  synonyms:
+  - average gpa
+  - mean gpa
+- name: enrollments_attendance_pct_total
+  description: Total attendance pct across enrollments.
+  expression: SUM("enrollments"."attendance_pct")
+  synonyms:
+  - total attendance pct
+  - sum of attendance pct
+- name: enrollments_attendance_pct_average
+  description: Average attendance pct across enrollments.
+  expression: AVG("enrollments"."attendance_pct")
+  synonyms:
+  - average attendance pct
+  - mean attendance pct
+- name: scholarships_amount_total
+  description: Total amount across scholarships.
+  expression: SUM("scholarships"."amount")
+  synonyms:
+  - total amount
+  - sum of amount
+- name: scholarships_amount_average
+  description: Average amount across scholarships.
+  expression: AVG("scholarships"."amount")
+  synonyms:
+  - average amount
+  - mean amount
+- name: scholarships_awarded_year_total
+  description: Total awarded year across scholarships.
+  expression: SUM("scholarships"."awarded_year")
+  synonyms:
+  - total awarded year
+  - sum of awarded year
+- name: scholarships_awarded_year_average
+  description: Average awarded year across scholarships.
+  expression: AVG("scholarships"."awarded_year")
+  synonyms:
+  - average awarded year
+  - mean awarded year
+business_rules:
+- name: Dean's List
+  description: Students with GPA >= 3.7
+  sql_expression: gpa >= 3.7
+  keywords:
+  - dean's list
+  - honor roll
+  - high gpa
+  - honor student
+  - top student
+- name: Failing Students
+  description: Students with grade F in enrollments
+  sql_expression: grade = 'F'
+  keywords:
+  - failing
+  - failed
+  - poor grade
+  - f grade
+- name: Senior Students
+  description: Students in their 4th year (year = 4)
+  sql_expression: year = 4
+  keywords:
+  - senior student
+  - final year
+  - graduating
+- name: Full Courses
+  description: Courses at or above max enrollment
+  sql_expression: (SELECT COUNT(*) FROM enrollments WHERE course_id = courses.id) >= max_enrollment
+  keywords:
+  - full class
+  - oversubscribed
+  - waitlist

@@ -2,6 +2,7 @@ duckdb
 pdfplumber
 scikit-learn
 sqlglot
+PyYAML
 sqlalchemy
 psycopg[binary]
 pymysql

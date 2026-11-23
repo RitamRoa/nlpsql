@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import json
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
@@ -88,6 +89,9 @@ class FewShotRetriever:
 
         lines = ["-- Similar Example Queries:"]
         for i, ex in enumerate(examples, 1):
-            lines.append(f"-- Example {i}: {ex.question}")
-            lines.append(f"-- SQL: {ex.sql}")
+            lines.append(
+                f"-- Example {i} question (JSON string): "
+                f"{json.dumps(ex.question, ensure_ascii=True)}"
+            )
+            lines.append(f"-- Example {i} SQL (JSON string): {json.dumps(ex.sql)}")
         return "\n".join(lines)

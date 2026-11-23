@@ -1,0 +1,244 @@
+version: 1
+tables:
+  customers:
+    description: Records for customers.
+    columns:
+      id:
+        description: Unique identifier for this customers record.
+      name:
+        description: Name (text).
+      email:
+        description: Email (text).
+      country:
+        description: Country (text).
+      city:
+        description: City (text).
+      loyalty_tier:
+        description: Loyalty tier (text).
+      signup_date:
+        description: Signup date (text).
+      total_spent:
+        description: Total spent (real).
+        synonyms:
+          - revenue
+          - lifetime spend
+  categories:
+    description: Records for categories.
+    columns:
+      id:
+        description: Unique identifier for this categories record.
+      name:
+        description: Name (text).
+      parent_id:
+        description: Parent id (integer).
+  products:
+    description: Records for products.
+    columns:
+      id:
+        description: Unique identifier for this products record.
+      name:
+        description: Name (text).
+      category_id:
+        description: Identifier of the related categories record.
+      price:
+        description: Price (real).
+      stock_quantity:
+        description: Stock quantity (integer).
+      brand:
+        description: Brand (text).
+      rating:
+        description: Rating (real).
+  orders:
+    description: Records for orders.
+    columns:
+      id:
+        description: Unique identifier for this orders record.
+      customer_id:
+        description: Identifier of the related customers record.
+      order_date:
+        description: Order date (text).
+      total_amount:
+        description: Total amount (real).
+        synonyms:
+          - revenue
+          - order revenue
+      status:
+        description: Status (text).
+      payment_method:
+        description: Payment method (text).
+  order_items:
+    description: Records for order items.
+    columns:
+      id:
+        description: Unique identifier for this order items record.
+      order_id:
+        description: Identifier of the related orders record.
+      product_id:
+        description: Identifier of the related products record.
+      quantity:
+        description: Quantity (integer).
+      unit_price:
+        description: Unit price (real).
+      discount:
+        description: Discount (real).
+  reviews:
+    description: Records for reviews.
+    columns:
+      id:
+        description: Unique identifier for this reviews record.
+      product_id:
+        description: Identifier of the related products record.
+      customer_id:
+        description: Identifier of the related customers record.
+      rating:
+        description: Rating (integer).
+      review_text:
+        description: Review text (text).
+      review_date:
+        description: Review date (text).
+metrics:
+- name: customers_total_spent_total
+  description: Total total spent across customers.
+  expression: SUM("customers"."total_spent")
+  synonyms:
+  - total total spent
+  - sum of total spent
+- name: customers_total_spent_average
+  description: Average total spent across customers.
+  expression: AVG("customers"."total_spent")
+  synonyms:
+  - average total spent
+  - mean total spent
+- name: products_price_total
+  description: Total price across products.
+  expression: SUM("products"."price")
+  synonyms:
+  - total price
+  - sum of price
+- name: products_price_average
+  description: Average price across products.
+  expression: AVG("products"."price")
+  synonyms:
+  - average price
+  - mean price
+- name: products_stock_quantity_total
+  description: Total stock quantity across products.
+  expression: SUM("products"."stock_quantity")
+  synonyms:
+  - total stock quantity
+  - sum of stock quantity
+- name: products_stock_quantity_average
+  description: Average stock quantity across products.
+  expression: AVG("products"."stock_quantity")
+  synonyms:
+  - average stock quantity
+  - mean stock quantity
+- name: products_rating_total
+  description: Total rating across products.
+  expression: SUM("products"."rating")
+  synonyms:
+  - total rating
+  - sum of rating
+- name: products_rating_average
+  description: Average rating across products.
+  expression: AVG("products"."rating")
+  synonyms:
+  - average rating
+  - mean rating
+- name: orders_total_amount_total
+  description: Total total amount across orders.
+  expression: SUM("orders"."total_amount")
+  synonyms:
+  - total total amount
+  - sum of total amount
+- name: orders_total_amount_average
+  description: Average total amount across orders.
+  expression: AVG("orders"."total_amount")
+  synonyms:
+  - average total amount
+  - mean total amount
+- name: order_items_quantity_total
+  description: Total quantity across order items.
+  expression: SUM("order_items"."quantity")
+  synonyms:
+  - total quantity
+  - sum of quantity
+- name: order_items_quantity_average
+  description: Average quantity across order items.
+  expression: AVG("order_items"."quantity")
+  synonyms:
+  - average quantity
+  - mean quantity
+- name: order_items_unit_price_total
+  description: Total unit price across order items.
+  expression: SUM("order_items"."unit_price")
+  synonyms:
+  - total unit price
+  - sum of unit price
+- name: order_items_unit_price_average
+  description: Average unit price across order items.
+  expression: AVG("order_items"."unit_price")
+  synonyms:
+  - average unit price
+  - mean unit price
+- name: order_items_discount_total
+  description: Total discount across order items.
+  expression: SUM("order_items"."discount")
+  synonyms:
+  - total discount
+  - sum of discount
+- name: order_items_discount_average
+  description: Average discount across order items.
+  expression: AVG("order_items"."discount")
+  synonyms:
+  - average discount
+  - mean discount
+- name: reviews_rating_total
+  description: Total rating across reviews.
+  expression: SUM("reviews"."rating")
+  synonyms:
+  - total rating
+  - sum of rating
+- name: reviews_rating_average
+  description: Average rating across reviews.
+  expression: AVG("reviews"."rating")
+  synonyms:
+  - average rating
+  - mean rating
+business_rules:
+- name: Gold Customer
+  description: Customers with Gold loyalty tier
+  sql_expression: loyalty_tier = 'Gold'
+  keywords:
+  - vip
+  - top tier
+  - gold
+  - gold customer
+  - premium customer
+- name: New Customer
+  description: Customers who signed up in 2024 or later
+  sql_expression: signup_date >= '2024-01-01'
+  keywords:
+  - new customer
+  - recent signup
+  - recently joined
+- name: Cancelled Orders
+  description: Orders with status = 'Cancelled'
+  sql_expression: status = 'Cancelled'
+  keywords:
+  - cancelled order
+  - failed order
+- name: Low Stock Products
+  description: Products with stock_quantity < 20
+  sql_expression: stock_quantity < 20
+  keywords:
+  - low stock
+  - running out
+  - out of stock
+- name: Highly Rated Products
+  description: Products with rating >= 4.5
+  sql_expression: rating >= 4.5
+  keywords:
+  - top rated
+  - highly rated
+  - best product

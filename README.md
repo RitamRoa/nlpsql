@@ -72,6 +72,82 @@ Schema uploads support up to eight files, with a combined 20 MB decoded limit (8
 
 Query stages stream to the dashboard as the pipeline runs. Database files can be connected read-only using SQLite or DuckDB. PostgreSQL/MySQL support uses SQLAlchemy with psycopg/PyMySQL; use a read-only database account and a connection string. The web server binds to `127.0.0.1`; remote database connection strings are kept only in server memory while the app runs and are not written to query history or share links. Browser Web Speech recognition may use browser/platform services; local Whisper is an optional fallback.
 
+## Semantic layer
+
+Built-in schema metadata lives in editable YAML files under `data/semantic/`. The loader uses their table/column descriptions, synonyms, metric definitions, and business rules to ground retrieval and SQL generation. Generate or refresh documentation and starter `SUM`/`AVG` metrics for a built-in schema with:
+
+```powershell
+python -m core.semantic_layer --schema company --force
+```
+
+Omit `--force` to create a semantic file only when one does not already exist. Regeneration retains existing descriptions, synonyms, metrics, and business rules where the schema still contains those tables and columns. Review generated metric definitions and descriptions for your domain before relying on them. Add aliases or edit definitions directly in the YAML; an unknown table or column in the catalog is reported when building the pipeline.
+
+## Query assistance
+
+- Each natural-language query is generated and executed against up to three candidate SQL statements. The confidence score is the fraction of candidates agreeing on the exact returned result; the default acceptance threshold is `2/3`. Below that, the app abstains and reports that it is not sure. This is a result-agreement heuristic, not a calibrated probability of correctness.
+- If a phrase matches multiple semantic synonyms, the dashboard asks which table/column was intended before running SQL. Database values can be linked fuzzily; those matches are marked as suggestions for the model to verify.
+- Follow-up prompts can use the previous SQL and schema as conversation context. The dashboard also provides a deterministic SQL explanation/column trace, a narration computed from returned rows, and an `EXPLAIN` plan with scan/join warnings.
+- SQL can be transpiled to SQLite, PostgreSQL, MySQL, or DuckDB. Transpilation does not execute the translated query.
+- The model arena compares up to three configured providers. To report execution accuracy, supply a reference SQL query; without one, the leaderboard reports execution success only. This is not a held-out benchmark.
+- Feedback is stored per schema locally in `%LOCALAPPDATA%\\NLPSQL\\feedback.sqlite3` (or under the user's home directory when `LOCALAPPDATA` is unset). Helpful examples are reused in generation. Corrected feedback replays the question and records same-question before/after result agreement; it is not a held-out accuracy estimate. Feedback records include the question and corrected SQL, so protect this local file.
+
+## Access controls and safe writes
+
+Role-based controls are optional. To enable them, create an access policy YAML file, then set the policy path and a token-to-role JSON mapping before starting the app:
+
+```yaml
+roles:
+  analyst:
+    schemas: [company]
+    tables:
+      employees:
+        columns: [id, name, department, email]
+        masked_columns: [email]
+        row_filter: "department = 'Sales'"
+      sales:
+        columns: [id, employee_id, amount, region]
+```
+
+In PowerShell:
+
+```powershell
+$env:NLPSQL_ACCESS_POLICY = "C:\\path\\to\\access-policy.yaml"
+$env:NLPSQL_ROLE_TOKENS = '{"replace-with-a-long-random-token":"analyst"}'
+python app.py
+```
+
+Sign in through the dashboard with the token. Use real randomly generated secrets; never commit them. Omit a table's `columns` list to allow all its columns, and omit `row_filter`/`masked_columns` when they are not needed. Row filters are SQL predicates validated against the database schema and automatically applied. Masked columns cannot be used for filtering, sorting, or calculations. The app binds to localhost by default; do not expose it to untrusted networks without adding deployment-grade authentication, TLS, and operational controls.
+
+Queries are validated as read-only SQL before execution. `/api/security_report` runs a deterministic regression suite against the active schema and reports the SQL-boundary block rate, including stored-value prompt-injection neutralization. This is not a live attack-rate measurement against the configured LLM.
+
+The audit database defaults to `%LOCALAPPDATA%\\NLPSQL\\audit.sqlite3` (or the user's home directory); set `NLPSQL_AUDIT_DB` to choose another path. It records hashes of questions and SQL rather than their raw contents.
+
+Write previews are restricted to in-memory SQLite. A role must set `allow_writes: true`; only a single `INSERT` or `UPDATE` is eligible. The preview runs in a rolled-back transaction and returns a row diff. Explicit confirmation commits once using a short-lived, single-use approval token. Writes to database files or remote databases, row-filtered tables, and tables with triggers/foreign-key dependencies are not supported. Use these previews only with trusted local users and test data.
+
+## MCP server
+
+NLPSQL exposes the validated, read-only query pipeline through an MCP stdio server. Start it from the project directory:
+
+```powershell
+$env:DB_SCHEMA = "company"
+$env:MOCK_LLM = "1" # Optional; otherwise the configured provider is used.
+python -m core.mcp_server
+```
+
+Configure the MCP client to launch that command with the project directory as its working directory. `DB_ENGINE` and `DB_PATH` select a connected SQLite or DuckDB database. When role policies are enabled, also set `NLPSQL_ACCESS_POLICY` and `NLPSQL_MCP_ROLE` to the permitted role name in the MCP server process. The stdio server is intended for a trusted local MCP client; it does not perform interactive token login. Configure a restricted role before exposing access to sensitive data. Audit events use `NLPSQL_AUDIT_DB`.
+
+## Model providers and arena
+
+The default provider selection prefers a local GGUF model when present, then an explicitly configured Ollama host, then an API provider when an API key is configured; otherwise it uses the mock provider. Ollama uses `OLLAMA_HOST` and `OLLAMA_MODEL`. The API provider uses `LLM_API_KEY` or `OPENAI_API_KEY`, with optional `LLM_API_MODEL` and `LLM_API_ENDPOINT`.
+
+The arena can use up to three providers defined by `NLPSQL_ARENA_MODELS` as a JSON array. For example:
+
+```powershell
+$env:NLPSQL_ARENA_MODELS = '[{"name":"Local","type":"local","path":"C:\\models\\model.gguf"},{"name":"Ollama","type":"ollama","host":"http://localhost:11434","model":"llama3.1:8b"},{"name":"API","type":"api","model":"gpt-4o-mini","endpoint":"https://api.openai.com/v1/chat/completions"}]'
+```
+
+Supported `type` values are `local`, `ollama`, and `api`; API keys are read from the environment, not this JSON. Only configure providers you intend to run. The arena sends the question and visible schema to each configured provider.
+
 The database is created in memory each time the app starts, with sample `employees`, `departments`, and `sales` tables. Any data changes disappear when the server stops.
 
 ## Troubleshooting

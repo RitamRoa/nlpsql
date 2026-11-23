@@ -1,0 +1,245 @@
+version: 1
+tables:
+  departments:
+    description: Records for departments.
+    columns:
+      id:
+        description: Unique identifier for this departments record.
+      name:
+        description: Name (text).
+      manager_id:
+        description: Manager id (integer).
+      budget:
+        description: Budget (integer).
+      location:
+        description: Location (text).
+  employees:
+    description: Records for employees.
+    columns:
+      id:
+        description: Unique identifier for this employees record.
+      name:
+        description: Name (text).
+      department:
+        description: Department (text).
+      salary:
+        description: Salary (integer).
+      hire_date:
+        description: Hire date (text).
+      job_title:
+        description: Job title (text).
+      email:
+        description: Email (text).
+      performance_rating:
+        description: Performance rating (real).
+      is_remote:
+        description: Is remote (integer).
+  sales:
+    description: Records for sales.
+    columns:
+      id:
+        description: Unique identifier for this sales record.
+      employee_id:
+        description: Identifier of the related employees record.
+      amount:
+        description: Amount (integer).
+        synonyms:
+          - revenue
+          - sales revenue
+      sale_date:
+        description: Sale date (text).
+      product_line:
+        description: Product line (text).
+      region:
+        description: Region (text).
+  projects:
+    description: Records for projects.
+    columns:
+      id:
+        description: Unique identifier for this projects record.
+      name:
+        description: Name (text).
+      budget:
+        description: Budget (integer).
+      department_id:
+        description: Identifier of the related departments record.
+      status:
+        description: Status (text).
+      start_date:
+        description: Start date (text).
+      end_date:
+        description: End date (text).
+  employee_projects:
+    description: Records for employee projects.
+    columns:
+      employee_id:
+        description: Unique identifier for this employee projects record.
+      project_id:
+        description: Unique identifier for this employee projects record.
+      role:
+        description: Role (text).
+      hours_allocated:
+        description: Hours allocated (integer).
+  leaves:
+    description: Records for leaves.
+    columns:
+      id:
+        description: Unique identifier for this leaves record.
+      employee_id:
+        description: Identifier of the related employees record.
+      leave_type:
+        description: Leave type (text).
+      start_date:
+        description: Start date (text).
+      end_date:
+        description: End date (text).
+      days_taken:
+        description: Days taken (integer).
+      approved:
+        description: Approved (integer).
+metrics:
+- name: departments_budget_total
+  description: Total budget across departments.
+  expression: SUM("departments"."budget")
+  synonyms:
+  - total budget
+  - sum of budget
+- name: departments_budget_average
+  description: Average budget across departments.
+  expression: AVG("departments"."budget")
+  synonyms:
+  - average budget
+  - mean budget
+- name: employees_salary_total
+  description: Total salary across employees.
+  expression: SUM("employees"."salary")
+  synonyms:
+  - total salary
+  - sum of salary
+- name: employees_salary_average
+  description: Average salary across employees.
+  expression: AVG("employees"."salary")
+  synonyms:
+  - average salary
+  - mean salary
+- name: employees_performance_rating_total
+  description: Total performance rating across employees.
+  expression: SUM("employees"."performance_rating")
+  synonyms:
+  - total performance rating
+  - sum of performance rating
+- name: employees_performance_rating_average
+  description: Average performance rating across employees.
+  expression: AVG("employees"."performance_rating")
+  synonyms:
+  - average performance rating
+  - mean performance rating
+- name: employees_is_remote_total
+  description: Total is remote across employees.
+  expression: SUM("employees"."is_remote")
+  synonyms:
+  - total is remote
+  - sum of is remote
+- name: employees_is_remote_average
+  description: Average is remote across employees.
+  expression: AVG("employees"."is_remote")
+  synonyms:
+  - average is remote
+  - mean is remote
+- name: sales_amount_total
+  description: Total amount across sales.
+  expression: SUM("sales"."amount")
+  synonyms:
+  - total amount
+  - sum of amount
+- name: sales_amount_average
+  description: Average amount across sales.
+  expression: AVG("sales"."amount")
+  synonyms:
+  - average amount
+  - mean amount
+- name: projects_budget_total
+  description: Total budget across projects.
+  expression: SUM("projects"."budget")
+  synonyms:
+  - total budget
+  - sum of budget
+- name: projects_budget_average
+  description: Average budget across projects.
+  expression: AVG("projects"."budget")
+  synonyms:
+  - average budget
+  - mean budget
+- name: employee_projects_hours_allocated_total
+  description: Total hours allocated across employee projects.
+  expression: SUM("employee_projects"."hours_allocated")
+  synonyms:
+  - total hours allocated
+  - sum of hours allocated
+- name: employee_projects_hours_allocated_average
+  description: Average hours allocated across employee projects.
+  expression: AVG("employee_projects"."hours_allocated")
+  synonyms:
+  - average hours allocated
+  - mean hours allocated
+- name: leaves_days_taken_total
+  description: Total days taken across leaves.
+  expression: SUM("leaves"."days_taken")
+  synonyms:
+  - total days taken
+  - sum of days taken
+- name: leaves_days_taken_average
+  description: Average days taken across leaves.
+  expression: AVG("leaves"."days_taken")
+  synonyms:
+  - average days taken
+  - mean days taken
+- name: leaves_approved_total
+  description: Total approved across leaves.
+  expression: SUM("leaves"."approved")
+  synonyms:
+  - total approved
+  - sum of approved
+- name: leaves_approved_average
+  description: Average approved across leaves.
+  expression: AVG("leaves"."approved")
+  synonyms:
+  - average approved
+  - mean approved
+business_rules:
+- name: High Earner
+  description: Employees with salary >= 90000
+  sql_expression: salary >= 90000
+  keywords:
+  - top earners
+  - high earners
+  - highest paid
+  - high salary
+- name: Recent Sales
+  description: Sales made in March 2024 or later
+  sql_expression: sale_date >= '2024-03-01'
+  keywords:
+  - recent sales
+  - latest sales
+  - new sales
+- name: Remote Employees
+  description: Employees working remotely
+  sql_expression: is_remote = 1
+  keywords:
+  - remote
+  - work from home
+  - wfh
+- name: Top Performer
+  description: Employees with performance rating >= 4.5
+  sql_expression: performance_rating >= 4.5
+  keywords:
+  - top performer
+  - best performer
+  - high performer
+  - excellent rating
+- name: Active Projects
+  description: Projects with status = 'Active'
+  sql_expression: status = 'Active'
+  keywords:
+  - active project
+  - ongoing project

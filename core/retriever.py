@@ -1,6 +1,7 @@
 import re
 from typing import Protocol
 from .adapters.base import Schema, Table, Column
+from .semantic_layer import SemanticLayer
 
 
 class BaseRetriever(Protocol):
@@ -28,20 +29,36 @@ class SchemaRetriever:
         max_tables: int = 4,
         max_cols_per_table: int = 25,
         include_foreign_key_paths: bool = True,
+        semantic_layer: SemanticLayer | None = None,
     ):
         self.max_tables = max_tables
         self.max_cols_per_table = max_cols_per_table
         self.include_foreign_key_paths = include_foreign_key_paths
+        self.semantic_layer = semantic_layer or SemanticLayer()
 
     def _score_table(self, question_tokens: set[str], table: Table) -> float:
         """Scores a table based on token overlap with table name and column names."""
         tbl_tokens = _tokenize(table.name)
+        table_definition = self.semantic_layer.table(table.name)
+        if table_definition:
+            for synonym in table_definition.synonyms:
+                tbl_tokens.update(_tokenize(synonym))
         # Give higher weight to matches with the table name itself
         tbl_match_score = len(question_tokens & tbl_tokens) * 3.0
 
         col_tokens = set()
         for col in table.columns:
-            col_tokens.update(_tokenize(col.name))
+            tokens = _tokenize(col.name)
+            if table_definition:
+                column_definition = next(
+                    (definition for name, definition in table_definition.columns.items()
+                     if name.lower() == col.name.lower()),
+                    None,
+                )
+                if column_definition:
+                    for synonym in column_definition.synonyms:
+                        tokens.update(_tokenize(synonym))
+            col_tokens.update(tokens)
 
         col_match_score = len(question_tokens & col_tokens) * 1.0
         return tbl_match_score + col_match_score

@@ -1,6 +1,6 @@
 # NLPSQL System Features & Capabilities Report
 
-NLPSQL is an enterprise-grade, agentic Natural Language to SQL (Text-to-SQL) system designed for precision, security, and multi-database versatility. It transitions Text-to-SQL from naive single-prompt generation to a robust, self-correcting multi-agent pipeline with native multilingual support and formal benchmark evaluation.
+NLPSQL is a Text-to-SQL project built around a small local model. It wraps generation in schema retrieval, a SQL validator, read-only execution, a repair loop and an access-control layer. This file describes what each part does; accuracy claims live only in the held-out benchmark (section 10), which you should run yourself.
 
 ---
 
@@ -23,15 +23,14 @@ graph TD
 
 ---
 
-## 1. Multilingual Translation Layer (Online & Offline Resilient)
+## 1. Multilingual Translation Layer
 
-NLPSQL accepts natural language queries in any language (Spanish, French, German, Hindi, Mandarin, etc.) without requiring a massive multilingual LLM ([`core/translator.py`](file:///d:/nlp/nlpsql/core/translator.py)):
+Non-English questions are translated to English before retrieval and generation ([`core/translator.py`](core/translator.py)):
 
-- **Zero-Latency Fast-Path**: Uses token and ASCII heuristics (`is_likely_english`) to bypass translation for English queries with 0ms overhead.
-- **Automatic Language Detection & Translation**: Seamlessly translates non-English user queries to English before schema retrieval, ensuring table and column names align perfectly.
-- **Offline Fallback Dictionary**: If internet access drops or DNS lookup fails, a built-in rule-based keyword/phrase dictionary translates core database actions and terms offline.
-- **In-Memory Caching (`lru_cache`)**: Caches translations to eliminate redundant network round-trips.
-- **UI Translation Feedback**: The dashboard highlights when translation occurred and displays the normalized English query.
+- **English fast path**: an ASCII/keyword heuristic (`is_likely_english`) skips translation for obvious English.
+- **Offline fallback**: a small rule-based dictionary (mostly Spanish, with a few other languages) covers common database words. It is a convenience, not a translator.
+- **Online translation is opt-in.** Set `NLPSQL_ONLINE_TRANSLATION=1` to send non-English questions to `api.mymemory.translated.net`. Left unset, no question text leaves the machine. Anything sent includes the question text, which may contain business data.
+- Results are cached in memory (`lru_cache`), and the dashboard shows when a question was translated.
 
 ---
 
@@ -41,16 +40,16 @@ NLPSQL breaks query generation down into specialized, modular agent components:
 
 | Component | File | Function |
 |---|---|---|
-| **Query Classifier** | [`core/agents/classifier.py`](file:///d:/nlp/nlpsql/core/agents/classifier.py) | Analyzes complexity (`EASY`, `MEDIUM`, `COMPLEX`), extracts required operations (Aggregations, Group By, Joins, Window functions, Sorting), and detects candidate entities. |
-| **SQL Drafter** | [`core/agents/drafter.py`](file:///d:/nlp/nlpsql/core/agents/drafter.py) | Dynamically chooses between native clean chat templates (for simple single-table queries) and grounded few-shot prompt assemblies for complex multi-table joins. |
-| **Semantic Critic** | [`core/agents/critic.py`](file:///d:/nlp/nlpsql/core/agents/critic.py) | Pre-execution heuristic auditor. Catches missing `JOIN` conditions, case sensitivity traps (`LIKE` vs `=`), unaggregated columns in `GROUP BY`, and column collisions. |
-| **Self-Correction Repair Loop** | [`core/pipeline.py`](file:///d:/nlp/nlpsql/core/pipeline.py) | If a query fails validation or database execution, captures dialect-specific error messages and re-prompts the Drafter with repair hints up to `max_repairs` times. |
+| **Query Classifier** | [`core/agents/classifier.py`](core/agents/classifier.py) | Analyzes complexity (`EASY`, `MEDIUM`, `COMPLEX`), extracts required operations (Aggregations, Group By, Joins, Window functions, Sorting), and detects candidate entities. |
+| **SQL Drafter** | [`core/agents/drafter.py`](core/agents/drafter.py) | Dynamically chooses between native clean chat templates (for simple single-table queries) and grounded few-shot prompt assemblies for complex multi-table joins. |
+| **Semantic Critic** | [`core/agents/critic.py`](core/agents/critic.py) | Pre-execution heuristic auditor. Catches missing `JOIN` conditions, case sensitivity traps (`LIKE` vs `=`), unaggregated columns in `GROUP BY`, and column collisions. |
+| **Self-Correction Repair Loop** | [`core/pipeline.py`](core/pipeline.py) | If a query fails validation or database execution, captures dialect-specific error messages and re-prompts the Drafter with repair hints up to `max_repairs` times. |
 
 ---
 
 ## 3. Dynamic Schema Retrieval & Column Pruning (RAG for Schemas)
 
-When databases scale to dozens or hundreds of tables, passing the whole DDL exhausts context windows and degrades accuracy ([`core/retriever.py`](file:///d:/nlp/nlpsql/core/retriever.py)):
+When databases scale to dozens or hundreds of tables, passing the whole DDL exhausts context windows and degrades accuracy ([`core/retriever.py`](core/retriever.py)):
 
 - **Token & Keyword Overlap Ranking**: Scores tables based on query terminology match.
 - **Foreign Key Graph Expansion**: Automatically includes join-dependency tables even if their names weren't explicitly stated in the user query.
@@ -60,11 +59,11 @@ When databases scale to dozens or hundreds of tables, passing the whole DDL exha
 
 ## 4. Domain Knowledge Engine & Few-Shot In-Context Learning
 
-- **Domain Knowledge Engine** ([`core/knowledge.py`](file:///d:/nlp/nlpsql/core/knowledge.py)):
+- **Domain Knowledge Engine** ([`core/knowledge.py`](core/knowledge.py)):
   - Resolves business jargon and metrics (e.g., *"high earners"*, *"recent sales"*, *"remote employees"*, *"active projects"*).
   - Supplies column synonym mappings and value normalization rules directly into the prompt.
   - **Scoped Literal Matching**: Uses `allowed_tables` filtering so knowledge hints don't trigger false joins on unrelated tables.
-- **Few-Shot Demonstration Retriever** ([`core/few_shot.py`](file:///d:/nlp/nlpsql/core/few_shot.py)):
+- **Few-Shot Demonstration Retriever** ([`core/few_shot.py`](core/few_shot.py)):
   - Matches user queries against curated question-to-SQL pairs using TF-IDF cosine similarity.
   - Dynamically injects the most relevant few-shot exemplars to guide edge-case SQL syntax.
 
@@ -72,13 +71,13 @@ When databases scale to dozens or hundreds of tables, passing the whole DDL exha
 
 ## 5. Multi-Backend Database Adapters
 
-NLPSQL abstracts storage through a unified database adapter interface ([`core/adapters/base.py`](file:///d:/nlp/nlpsql/core/adapters/base.py)):
+NLPSQL abstracts storage through a unified database adapter interface ([`core/adapters/base.py`](core/adapters/base.py)):
 
-- **SQLite Adapter** ([`core/adapters/sqlite.py`](file:///d:/nlp/nlpsql/core/adapters/sqlite.py)):
+- **SQLite Adapter** ([`core/adapters/sqlite.py`](core/adapters/sqlite.py)):
   - Supports both in-memory databases and physical `.db` / `.sqlite` files on disk.
   - Enforces read-only query execution via connection PRAGMAs.
   - Supports virtual generated columns (`department TEXT GENERATED ALWAYS AS (name) VIRTUAL`) for seamless column aliasing.
-- **DuckDB Adapter** ([`core/adapters/duckdb.py`](file:///d:/nlp/nlpsql/core/adapters/duckdb.py)):
+- **DuckDB Adapter** ([`core/adapters/duckdb.py`](core/adapters/duckdb.py)):
   - Analytical engine capable of querying Parquet, CSV, and high-throughput columnar datasets.
   - Read-only execution safety guarantees.
 
@@ -86,21 +85,21 @@ NLPSQL abstracts storage through a unified database adapter interface ([`core/ad
 
 ## 6. Multi-Provider LLM & Cascading Architecture
 
-Flexible provider abstraction ([`core/providers/base.py`](file:///d:/nlp/nlpsql/core/providers/base.py)) allows seamless switching between local models and cloud endpoints:
+Flexible provider abstraction ([`core/providers/base.py`](core/providers/base.py)) allows seamless switching between local models and cloud endpoints:
 
 | Provider | File | Description |
 |---|---|---|
-| **Local GGUF (`SQLGenerator`)** | [`core/generator.py`](file:///d:/nlp/nlpsql/core/generator.py) | Embedded `llama-cpp-python` runtime running quantized local models (`SmolLM2-135M-text-to-sql.Q8_0.gguf`) with zero external API dependencies or GPU requirements. Implements `generate_text()`. |
-| **Ollama Provider** | [`core/providers/ollama.py`](file:///d:/nlp/nlpsql/core/providers/ollama.py) | Connects to local or remote Ollama servers (`qwen2.5-coder`, `mistral`, `llama3`). |
-| **OpenAI-Compatible API** | [`core/providers/api.py`](file:///d:/nlp/nlpsql/core/providers/api.py) | Connects to standard OpenAI endpoints, Groq, DeepSeek, or vLLM deployments. |
-| **Cascading Provider** | [`core/providers/cascade.py`](file:///d:/nlp/nlpsql/core/providers/cascade.py) | Cost/latency optimizer: routes simple queries to fast, lightweight local models, automatically escalating complex queries or repair failures to frontier models. |
-| **Mock Provider & Generator** | [`core/providers/mock.py`](file:///d:/nlp/nlpsql/core/providers/mock.py) | Instant offline testing, CI/CD pipelines, and automated test runners. |
+| **Local GGUF (`SQLGenerator`)** | [`core/generator.py`](core/generator.py) | Embedded `llama-cpp-python` runtime running quantized local models (`SmolLM2-135M-text-to-sql.Q8_0.gguf`) with zero external API dependencies or GPU requirements. Implements `generate_text()`. |
+| **Ollama Provider** | [`core/providers/ollama.py`](core/providers/ollama.py) | Connects to local or remote Ollama servers (`qwen2.5-coder`, `mistral`, `llama3`). |
+| **OpenAI-Compatible API** | [`core/providers/api.py`](core/providers/api.py) | Connects to standard OpenAI endpoints, Groq, DeepSeek, or vLLM deployments. |
+| **Cascading Provider** | [`core/providers/cascade.py`](core/providers/cascade.py) | Cost/latency optimizer: routes simple queries to fast, lightweight local models, automatically escalating complex queries or repair failures to frontier models. |
+| **Mock Provider & Generator** | [`core/providers/mock.py`](core/providers/mock.py) | Instant offline testing, CI/CD pipelines, and automated test runners. |
 
 ---
 
 ## 7. Preloaded Multi-Domain Schemas
 
-NLPSQL includes 4 production-grade relational database schemas with mock data ([`data/`](file:///d:/nlp/nlpsql/data)):
+NLPSQL includes 4 production-grade relational database schemas with mock data ([`data/`](data)):
 
 1. **Company Database (`company.sql`)**: Employees, departments (with virtual column aliasing), projects, sales, performance ratings, leaves.
 2. **E-Commerce Database (`ecommerce.sql`)**: Customers, orders, items, products, categories, reviews, payments.
@@ -111,7 +110,7 @@ NLPSQL includes 4 production-grade relational database schemas with mock data ([
 
 ## 8. Schema Importer: Upload & Query Custom Data
 
-Users can dynamically import external data and immediately query it in natural language via [`core/schema_importer.py`](file:///d:/nlp/nlpsql/core/schema_importer.py):
+Users can dynamically import external data and immediately query it in natural language via [`core/schema_importer.py`](core/schema_importer.py):
 
 | Upload Format | Processing Pipeline |
 |---|---|
@@ -122,88 +121,44 @@ Users can dynamically import external data and immediately query it in natural l
 
 ---
 
-## 9. Security & AST-Based SQL Validator
+## 9. Security: Validator and Access Control
 
-Security is built in at the AST parsing level ([`core/validator.py`](file:///d:/nlp/nlpsql/core/validator.py)):
-- **SQLGlot Parsing**: AST inspection ensures query is strictly a `SELECT` statement.
-- **Destructive Query Blocking**: Rejects `DROP`, `DELETE`, `UPDATE`, `INSERT`, `ALTER`, `TRUNCATE`.
-- **SQL Injection Prevention**: Blocks multi-statement execution (e.g. `; DROP TABLE...`).
-- **Dangerous Pragmas & Extensions**: Disallows SQLite/DuckDB dangerous built-ins (`load_extension`, `ATTACH DATABASE`, `PRAGMA writable_schema`).
-- **Result Truncation**: Safeguards memory by enforcing a maximum row limit (`LIMIT 100`) on large result sets.
+**Validator** ([`core/validator.py`](core/validator.py)), built on SQLGlot:
+- Exactly one statement, and it must be a query. Writes, DDL, `PRAGMA`, `ATTACH`, `COPY` and `INSTALL` are rejected.
+- Tables and columns must exist in the schema, including qualified columns (`e.salary` is checked against `e`'s table).
+- Recursive CTEs are rejected, as are queries with more than one join lacking a join condition (cartesian blow-ups).
+- A deny-list blocks file-access and sleep functions (`load_extension`, `pg_read_file`, `pg_sleep`, `sleep`, ...). A deny-list is a backstop, not a sandbox.
+
+**Execution**: adapters open the database read-only, cap returned rows (`LIMIT 100` by default) and enforce a timeout (SQLite progress handler, DuckDB interrupt).
+
+**Access control** ([`core/security.py`](core/security.py)): per-role table/column allow-lists, mandatory row filters, masked columns and an audit log. A CTE that reuses the name of a real table is rejected, because the engine would resolve the inner reference to the real table and skip the role's row filter. Regression tests for this are in `tests/test_rbac_regressions.py`, run on SQLite and DuckDB, and `core/security_redteam.py` exercises the same cases.
+
+Known limits: the feedback store is not scoped per role, and the web server is single-threaded. Treat the access layer as defence in depth and put real permissions on the database account too.
 
 ---
 
-## 10. Spider & BIRD Benchmarking Suite & Evaluation Metrics
- 
-Automated Benchmark Suite
-============================================================
-           NLPSQL BENCHMARK & EVALUATION SUITE
-============================================================
-[*] Evaluator Engine: Local GGUF Model (SmolLM2-135M-text-to-sql.Q8_0.gguf)
-[*] Running evaluation on 5 test queries...
+## 10. Evaluation
 
-=== Text-to-SQL Benchmark Report ===
-Total Queries Evaluated: 5
-Valid SQL Rate (V):      100.0%
-Execution Accuracy (EX): 100.0%
-Repaired Queries:        0
-Avg Generation Latency:  0.642s
-Avg Total Latency:       0.648s
-=====================================
+The old 5-question benchmark (`run_benchmark.py`) used questions that were also in the few-shot examples, so its 100% was not evidence of accuracy. It is kept only as a smoke test.
 
-Detailed Per-Query Results:
-------------------------------------------------------------
-1. [MATCH] Q: List all employees in Engineering
-   Pred SQL: SELECT e.name, e.department, e.salary, e.hire_date, e.job_title, e.email, e.performance_rating FROM employees e WHERE e.department = 'Engineering';
-   Attempts: 1
+The real benchmark is `eval/heldout_benchmark.json`: 80 questions with gold SQL across the four bundled schemas (20 each, easy/medium/hard). Guards:
+- `check_leakage` fails the run if a question or its gold SQL matches a few-shot example, or a question appears in the semantic-layer YAML. Near-duplicates (TF-IDF similarity >= 0.8) are reported as warnings.
+- Benchmark pipelines are built with `include_feedback=False`, so feedback saved from the dashboard cannot leak in.
+- Every gold query is checked to be valid, to return rows, and to have no tie at its `LIMIT` cutoff (`tests/test_heldout_benchmark.py`).
 
-2. [MATCH] Q: What is the average salary by department?
-   Pred SQL: SELECT department, AVG(salary) as avg_sal FROM employees GROUP BY department;
-   Attempts: 1
+```bash
+python run_heldout_benchmark.py --out results.json --markdown results.md
+```
 
-3. [MATCH] Q: Show all remote employees
-   Pred SQL: SELECT * FROM employees WHERE is_remote = 1;
-   Attempts: 1
+It reports execution accuracy with a 95% Wilson interval, valid-SQL rate, coverage and selective accuracy under abstention, a confidence-vs-accuracy table, and ablations that each disable one component (repair, few-shot, semantic layer, schema pruning, value linking, confidence sampling) plus a minimal baseline. The runner refuses to run with the mock provider.
 
-4. [MATCH] Q: Which projects are currently active?
-   Pred SQL: SELECT name, budget, status FROM projects WHERE status = 'Active' AND status = 'Active' AND status IN (SELECT status FROM projects WHERE status = 'Active');
-   Attempts: 1
+Limits to keep in mind: the bundled databases are tiny, so execution match is weaker evidence than on Spider or BIRD, and 80 questions give wide intervals. Differences of a few points are noise. Publish the numbers from your own run, not these descriptions.
 
-5. [MATCH] Q: Find employees with salary greater than 70000
-   Pred SQL: SELECT * FROM employees WHERE salary > 70000;
-   Attempts: 1
-
-============================================================
-              RUNNING ABLATION STUDY
-============================================================
-| Metric                      | Baseline (No Repair) | Multi-Agent (Self-Repair) |
-|-----------------------------|----------------------|---------------------------|
-| Valid SQL Rate (%)          |                100.0% |                     100.0% |
-| Execution Accuracy (EX %)   |                100.0% |                     100.0% |
-| Avg Total Latency (s)       |                0.602s |                     0.584s |
-============================================================
-
-
-Unit-Level Benchmark Tests
-
-===================================== test session starts =====================================
-platform win32 -- Python 3.13.2, pytest-9.1.1, pluggy-1.6.0 -- C:\Users\PRIYA\AppData\Local\Programs\Python\Python313\python.exe
-cachedir: .pytest_cache
-rootdir: D:\nlp\nlpsql
-configfile: pytest.ini
-plugins: anyio-4.8.0, zarr-3.3.0
-collected 4 items
-
-tests/test_eval.py::test_compare_results_order_invariance PASSED                         [ 25%]
-tests/test_eval.py::test_compare_results_numeric_and_null_handling PASSED                [ 50%]
-tests/test_eval.py::test_eval_runner_accuracy_and_repair PASSED                          [ 75%]
-tests/test_eval.py::test_ablation_study_runner PASSED                                    [100%]
-
-====================================== 4 passed in 5.71s ======================================
+---
 
 ## 11. Interactive Web Dashboard
 
-A responsive web application served via Python standard library in [`app.py`](file:///d:/nlp/nlpsql/app.py):
+A responsive web application served via Python standard library in [`app.py`](app.py):
 - **Live Schema Explorer**: Interactive schema drawer displaying tables, columns, data types, and primary/foreign key relations.
 - **Schema Switcher**: Seamless switching between preloaded databases (Company, E-Commerce, Healthcare, University) and user-uploaded custom schemas.
 - **Schema Upload Modal**: Drag-and-drop file upload supporting `.sql`, `.csv`, `.json`, and `.pdf` files.

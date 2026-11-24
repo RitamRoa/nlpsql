@@ -47,7 +47,12 @@ class FewShotRetriever:
         examples: list[FewShotExample] | None = None,
         top_k: int = 2,
     ):
-        self.examples = examples or list(DEFAULT_FEW_SHOT_EXAMPLES)
+        # None means "use the built-in company examples". An explicit empty list
+        # means "no examples" and must not silently fall back to them, otherwise
+        # unrelated schemas receive prompts about employees and sales.
+        self.examples = (
+            list(DEFAULT_FEW_SHOT_EXAMPLES) if examples is None else list(examples)
+        )
         self.top_k = top_k
         self.vectorizer = TfidfVectorizer(stop_words="english")
         self._fit()

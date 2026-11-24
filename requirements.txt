@@ -6,4 +6,3 @@ PyYAML
 sqlalchemy
 psycopg[binary]
 pymysql
-app

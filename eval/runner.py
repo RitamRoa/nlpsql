@@ -18,6 +18,14 @@ class EvalItemResult:
     attempts: int
     error: str | None
     timings: dict = field(default_factory=dict)
+    id: str | None = None
+    domain: str | None = None
+    difficulty: str | None = None
+    confidence: float | None = None
+    abstained: bool = False
+    # For abstained items only: whether the query the model would have returned
+    # matches gold. Tells us if abstaining avoided a wrong answer or a right one.
+    would_be_correct: bool | None = None
 
 
 @dataclass
@@ -107,6 +115,14 @@ class EvalRunner:
             if is_match:
                 exec_match_count += 1
 
+            would_be_correct = None
+            if pipe_res.abstained and pipe_res.sql and gold_result is not None:
+                try:
+                    candidate = self.adapter.execute_readonly(pipe_res.sql)
+                    would_be_correct = compare_results(candidate, gold_result)
+                except ExecutionError:
+                    would_be_correct = False
+
             details.append(
                 EvalItemResult(
                     question=question,
@@ -117,6 +133,12 @@ class EvalRunner:
                     attempts=pipe_res.attempts,
                     error=pipe_res.error,
                     timings=pipe_res.timings,
+                    id=item.get("id"),
+                    domain=item.get("domain"),
+                    difficulty=item.get("difficulty"),
+                    confidence=pipe_res.confidence,
+                    abstained=pipe_res.abstained,
+                    would_be_correct=would_be_correct,
                 )
             )
 

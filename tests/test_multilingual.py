@@ -44,3 +44,22 @@ def test_pipeline_multilingual_integration(monkeypatch):
     assert result.sql == "SELECT * FROM employees;"
     assert result.result is not None
     assert len(result.result.rows) == 2
+
+
+def test_online_translation_is_opt_in(monkeypatch):
+    import urllib.request
+
+    from core import translator
+
+    calls = []
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: calls.append(a) or (_ for _ in ()).throw(OSError("blocked")))
+    monkeypatch.delenv("NLPSQL_ONLINE_TRANSLATION", raising=False)
+    translator.translate_query.cache_clear()
+    translator.translate_query("zzz qqq xxx")
+    assert calls == [], "no network call unless NLPSQL_ONLINE_TRANSLATION=1"
+
+    monkeypatch.setenv("NLPSQL_ONLINE_TRANSLATION", "1")
+    translator.translate_query.cache_clear()
+    translator.translate_query("zzz qqq xxx")
+    assert len(calls) == 1
+    translator.translate_query.cache_clear()

@@ -1,6 +1,7 @@
 import os
 import re
 import tempfile
+import threading
 import duckdb
 from .base import Column, Table, Schema, Result, ExecutionError
 
@@ -101,15 +102,31 @@ class DuckDBAdapter:
     def execute_readonly(
         self, sql: str, timeout_s: float = 5.0, limit: int = 100
     ) -> Result:
+        cursor = self.conn.cursor()
+        timed_out = threading.Event()
+
+        def interrupt():
+            timed_out.set()
+            try:
+                cursor.interrupt()
+            except Exception:
+                pass
+
+        timer = threading.Timer(timeout_s, interrupt)
+        timer.daemon = True
+        timer.start()
         try:
-            cursor = self.conn.cursor()
             cursor.execute(sql)
             rows = cursor.fetchmany(limit + 1)
             cols = [d[0] for d in cursor.description] if cursor.description else []
             truncated = len(rows) > limit
             return Result(columns=cols, rows=rows[:limit], truncated=truncated)
         except Exception as e:
+            if timed_out.is_set():
+                raise ExecutionError(f"query exceeded the {timeout_s:g}s time limit") from e
             raise ExecutionError(str(e)) from e
+        finally:
+            timer.cancel()
 
     def close(self):
         try:

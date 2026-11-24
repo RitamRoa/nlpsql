@@ -6,6 +6,7 @@ operate with maximum accuracy across all languages.
 
 import json
 import logging
+import os
 import re
 import urllib.parse
 import urllib.request
@@ -93,6 +94,11 @@ def offline_translate(text: str) -> tuple[str, bool]:
     return cleaned, modified
 
 
+def online_translation_enabled() -> bool:
+    """True only when NLPSQL_ONLINE_TRANSLATION=1; questions then leave this machine."""
+    return os.environ.get("NLPSQL_ONLINE_TRANSLATION", "").strip() == "1"
+
+
 @lru_cache(maxsize=256)
 def translate_query(text: str, timeout_seconds: float = 4.0) -> tuple[str, bool, str]:
     """Translates a natural language query to English if needed.
@@ -108,30 +114,34 @@ def translate_query(text: str, timeout_seconds: float = 4.0) -> tuple[str, bool,
     if is_likely_english(clean_text):
         return clean_text, False, "en"
 
-    try:
-        query_params = urllib.parse.urlencode({
-            "q": clean_text,
-            "langpair": "autodetect|en",
-        })
-        url = f"https://api.mymemory.translated.net/get?{query_params}"
-        req = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": "NLPSQL-Translator/1.0 (Mozilla/5.0)",
-                "Accept": "application/json",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            translated = data.get("responseData", {}).get("translatedText")
+    # Online translation sends the user's question to a third-party service
+    # (api.mymemory.translated.net), so it is off unless explicitly enabled.
+    if online_translation_enabled():
+        try:
+            query_params = urllib.parse.urlencode({
+                "q": clean_text,
+                "langpair": "autodetect|en",
+            })
+            url = f"https://api.mymemory.translated.net/get?{query_params}"
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "NLPSQL-Translator/1.0 (Mozilla/5.0)",
+                    "Accept": "application/json",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                translated = data.get("responseData", {}).get("translatedText")
 
-            # If translation succeeded and is distinct from original
-            if translated and translated.strip().lower() != clean_text.lower():
-                return translated.strip(), True, "auto"
-    except Exception as e:
-        logger.warning("Online translation unavailable (%s). Using offline fallback.", e)
-        offline_res, was_off = offline_translate(clean_text)
-        if was_off:
-            return offline_res, True, "offline_fallback"
+                # If translation succeeded and is distinct from original
+                if translated and translated.strip().lower() != clean_text.lower():
+                    return translated.strip(), True, "auto"
+        except Exception as e:
+            logger.warning("Online translation unavailable (%s). Using offline fallback.", e)
+
+    offline_res, was_off = offline_translate(clean_text)
+    if was_off:
+        return offline_res, True, "offline_fallback"
 
     return clean_text, False, "en"

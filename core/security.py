@@ -139,6 +139,17 @@ class AccessPolicy:
 
         table_policies = {name.lower(): options for name, options in role.tables.items()}
         cte_names = {cte.alias_or_name.lower() for cte in tree.find_all(exp.CTE)}
+        # A CTE that reuses a real table's name would make every later reference
+        # look like "the CTE" and skip table, column and row-filter checks, because
+        # engines such as DuckDB and PostgreSQL resolve the inner reference to the
+        # real table. Reject the collision instead of trying to track scopes.
+        real_table_names = {table.name.lower() for table in (full_schema or schema).tables}
+        real_table_names.update(table_policies)
+        shadowed = sorted(cte_names & real_table_names)
+        if shadowed:
+            raise PermissionError(
+                f"CTE name '{shadowed[0]}' collides with a database table; choose a different name."
+            )
         table_nodes = list(tree.find_all(exp.Table))
         for table_node in table_nodes:
             name = table_node.name

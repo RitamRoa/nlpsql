@@ -1,6 +1,28 @@
 # Local Text-to-SQL Dashboard
 
-A small Python web app that uses a local SmolLM2 GGUF model to turn natural-language questions into SQL, then runs the SQL against an in-memory SQLite database. The dashboard and model run locally; the first model load can take a little while.
+A Python web app that turns natural-language questions into SQL with a small local model (SmolLM2 GGUF by default), validates the SQL, and runs it read-only against SQLite, DuckDB, Postgres or MySQL. Around the model it adds schema retrieval, few-shot retrieval, a repair loop, confidence-based abstention, role-based access control and an approved-write workflow.
+
+## Status and limits
+
+- Accuracy is measured only by the held-out benchmark below. Run it with your model; no number in this repo should be read as a result from your setup.
+- The bundled databases are small demos. Execution match on them is weaker evidence than on Spider or BIRD.
+- Non-English questions use an offline word list by default. Online translation sends the question to a third-party API and is off unless `NLPSQL_ONLINE_TRANSLATION=1`.
+- The access-control layer is defence in depth. Also give the database account least-privilege permissions.
+- The HTTP server is single-threaded and meant for local use, not for exposing to a network.
+
+## Benchmark
+
+`eval/heldout_benchmark.json` holds 80 questions with gold SQL (4 schemas x 20, easy/medium/hard). The harness refuses to run if a question or its gold SQL appears in the few-shot examples or semantic-layer files, builds pipelines without saved feedback, and runs ablations that each switch off one component.
+
+```bash
+python run_heldout_benchmark.py                       # all ablations, real model required
+python run_heldout_benchmark.py --configs full baseline_minimal --domain company
+python run_heldout_benchmark.py --out results.json --markdown results.md
+```
+
+Output: execution accuracy with a 95% interval, valid-SQL rate, coverage and selective accuracy, a confidence-vs-accuracy table, and per-difficulty and per-schema breakdowns. `run_benchmark.py` is a 5-question smoke test whose questions overlap the few-shot examples; do not quote it as accuracy.
+
+Tests: `pytest` (set `MOCK_LLM=1` to avoid loading a model).
 
 ## Project files
 
@@ -52,7 +74,7 @@ python app.py
 
 Then open [http://localhost:8000](http://localhost:8000) in a browser. The first startup loads the local model into memory. Press `Ctrl+C` in the terminal to stop the server.
 
-To run the benchmark instead, use `python run_benchmark.py` from the project directory. It uses the mock provider when the GGUF model is not present.
+To run the benchmark instead, use `python run_heldout_benchmark.py` (see Benchmark above).
 
 If port 8000 is already in use, stop the other process before starting this app; the port is currently fixed in `app.py`.
 
@@ -167,3 +189,7 @@ The dashboard sends a JSON `POST` request to `/api/query`:
 ```
 
 The response includes the generated SQL, result columns and rows, any database error, and timing values. `GET /` serves the dashboard.
+
+## License
+
+MIT, see `LICENSE`.

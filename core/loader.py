@@ -270,8 +270,13 @@ def build_pipeline(
     db_path: str | None = None,
     schema_name: str = "company",
     provider: LLMProvider | None = None,
+    include_feedback: bool = True,
 ) -> tuple[Pipeline, DBAdapter, DomainKnowledgeEngine]:
-    """Builds the complete multi-agent pipeline for a specified schema or physical DB file."""
+    """Builds the complete multi-agent pipeline for a specified schema or physical DB file.
+
+    include_feedback=False keeps locally saved user corrections out of the few-shot
+    pool. Benchmarks must pass it, or results depend on whoever ran them.
+    """
     adapter = create_adapter(
         db_engine=db_engine, db_path=db_path, schema_name=schema_name
     )
@@ -285,8 +290,9 @@ def build_pipeline(
 
     llm = provider or MockProvider()
     few_shot_examples = _get_few_shot_examples(schema_name)
-    few_shot_examples.extend(FeedbackStore().examples(schema_name))
-    few_shot = FewShotRetriever(examples=few_shot_examples or None, top_k=2)
+    if include_feedback:
+        few_shot_examples.extend(FeedbackStore().examples(schema_name))
+    few_shot = FewShotRetriever(examples=few_shot_examples, top_k=2)
     drafter = SQLDrafter(provider=llm, few_shot_retriever=few_shot)
     retriever = SchemaRetriever(semantic_layer=semantic_layer)
 

@@ -29,7 +29,7 @@ MAX_UNCONSTRAINED_JOINS = 1
 def validate(sql: str, schema: Schema, dialect: str = "sqlite") -> None:
     try:
         statements = [s for s in sqlglot.parse(sql, read=dialect) if s is not None]
-    except sqlglot.errors.ParseError as e:
+    except (sqlglot.errors.ParseError, sqlglot.errors.TokenError) as e:
         raise ValidationError(f"parse error: {e}") from e
 
     if len(statements) != 1:

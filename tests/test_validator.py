@@ -51,3 +51,12 @@ def test_allows_valid(sql):
 def test_rejects_unsafe_or_invalid(sql):
     with pytest.raises(ValidationError):
         validate(sql, SCHEMA)
+
+
+def test_rejects_tokenizer_errors_as_validation_errors():
+    malformed = (
+        "SELECT consultation_fee FROM doctors "
+        "WHERE 'the consultation_fee` column. Here's the corrected SQL:"
+    )
+    with pytest.raises(ValidationError, match="parse error"):
+        validate(malformed, SCHEMA)

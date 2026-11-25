@@ -2,7 +2,7 @@ import re
 import json
 from .classifier import QueryClassification
 from ..knowledge import KnowledgeContext
-from ..few_shot import FewShotRetriever
+from ..few_shot import FewShotExample, FewShotRetriever
 from ..providers.base import LLMProvider
 
 
@@ -86,13 +86,26 @@ class SQLDrafter:
         feedback: str | None = None,
         temperature: float = 0.0,
         conversation_context: str | None = None,
+        feedback_examples: list[FewShotExample] | None = None,
     ) -> str:
+        few_shot_retriever = self.few_shot_retriever
+        if feedback_examples:
+            few_shot_retriever = FewShotRetriever(
+                examples=[*self.few_shot_retriever.examples, *feedback_examples],
+                top_k=self.few_shot_retriever.top_k,
+            )
         # Fast-path for direct collection queries without filters
-        if not feedback:
+        if not feedback and not feedback_examples:
             direct = detect_direct_collection_query(question, schema_ddl)
             if direct:
                 return direct
-        if classification.complexity == "EASY" and not feedback and not conversation_context and not (knowledge and knowledge.to_prompt_text()):
+        if (
+            classification.complexity == "EASY"
+            and not feedback
+            and not feedback_examples
+            and not conversation_context
+            and not (knowledge and knowledge.to_prompt_text())
+        ):
             full_prompt = (
                 "<|im_start|>system\n"
                 "You are a helpful assistant who answers questions about database tables by responding with SQL queries. "
@@ -135,7 +148,7 @@ class SQLDrafter:
             ])
 
         # Add dynamic few-shot examples
-        few_shot_text = self.few_shot_retriever.format_for_prompt(question)
+        few_shot_text = few_shot_retriever.format_for_prompt(question)
         if few_shot_text:
             prompt_parts.extend(["", "### Reference Examples:", few_shot_text])
 

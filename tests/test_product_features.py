@@ -4,8 +4,10 @@ import pytest
 
 from core.adapters.base import Column, Result, Schema, Table
 from core.adapters.sqlite import SQLiteAdapter
+from core.agents.drafter import SQLDrafter
 from core.clarification import find_ambiguous_terms
 from core.feedback import FeedbackStore
+from core.few_shot import FewShotExample, FewShotRetriever
 from core.knowledge import DomainKnowledgeEngine
 from core.mcp_server import serve as serve_mcp
 from core.pipeline import Pipeline
@@ -315,4 +317,90 @@ def test_feedback_storage_and_redteam_report(tmp_path):
     report = run_redteam_suite(adapter.get_schema(), adapter.dialect())
     assert report["blocked"] == report["total"]
     assert report["block_rate"] == 1
+    adapter.close()
+
+
+def test_feedback_is_scoped_by_role_and_schema(tmp_path):
+    store = FeedbackStore(str(tmp_path / "feedback.sqlite3"))
+    store.add(
+        "company", "Analyst question", "SELECT name FROM employees", 1,
+        role_name="analyst",
+    )
+    store.add(
+        "company", "Admin question", "SELECT email FROM employees", 1,
+        role_name="admin",
+    )
+    store.add(
+        "university", "Other schema question", "SELECT name FROM students", 1,
+        role_name="analyst",
+    )
+
+    assert [example.question for example in store.examples(
+        "company", role_name="analyst"
+    )] == ["Analyst question"]
+    assert [example.question for example in store.examples(
+        "company", role_name="admin"
+    )] == ["Admin question"]
+    assert store.stats("company", role_name="analyst")["total"] == 1
+
+
+def test_feedback_store_migrates_legacy_rows_to_local_operator(tmp_path):
+    path = tmp_path / "legacy-feedback.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.execute(
+        """CREATE TABLE feedback (
+            id INTEGER PRIMARY KEY,
+            schema_name TEXT NOT NULL,
+            question TEXT NOT NULL,
+            sql TEXT NOT NULL,
+            rating INTEGER NOT NULL,
+            corrected INTEGER NOT NULL DEFAULT 0,
+            before_match INTEGER,
+            after_match INTEGER,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )"""
+    )
+    connection.execute(
+        "INSERT INTO feedback (schema_name, question, sql, rating) VALUES (?, ?, ?, ?)",
+        ("company", "Legacy question", "SELECT 1", 1),
+    )
+    connection.commit()
+    connection.close()
+
+    store = FeedbackStore(str(path))
+    assert [example.question for example in store.examples("company")] == [
+        "Legacy question"
+    ]
+    assert store.examples("company", role_name="analyst") == []
+
+
+def test_role_feedback_examples_reach_the_sql_prompt():
+    class RecordingProvider:
+        def __init__(self):
+            self.prompt = ""
+
+        def generate_text(self, prompt, **_kwargs):
+            self.prompt = prompt
+            return "SELECT name FROM employees;"
+
+    provider = RecordingProvider()
+    drafter = SQLDrafter(
+        provider,
+        few_shot_retriever=FewShotRetriever(examples=[]),
+    )
+    adapter = SQLiteAdapter(seed_sql=SEED)
+    pipeline = Pipeline(adapter, drafter, confidence_samples=1)
+    result = pipeline.ask(
+        "Find the analyst's preferred query",
+        feedback_examples=[
+            FewShotExample(
+                "Analyst-only example",
+                "SELECT name FROM employees WHERE name = 'Alice';",
+            )
+        ],
+    )
+
+    assert result.result is not None
+    assert result.result.rows == [("Alice",), ("Bob",)]
+    assert "Analyst-only example" in provider.prompt
     adapter.close()

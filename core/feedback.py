@@ -1,4 +1,4 @@
-"""Local, per-schema feedback storage for reviewed question/SQL examples."""
+"""Local, per-role and per-schema feedback storage for reviewed examples."""
 import os
 import sqlite3
 from pathlib import Path
@@ -24,6 +24,7 @@ class FeedbackStore:
             connection.execute(
                 """CREATE TABLE IF NOT EXISTS feedback (
                     id INTEGER PRIMARY KEY,
+                    role_name TEXT NOT NULL DEFAULT 'local_operator',
                     schema_name TEXT NOT NULL,
                     question TEXT NOT NULL,
                     sql TEXT NOT NULL,
@@ -37,13 +38,18 @@ class FeedbackStore:
             columns = {
                 row[1] for row in connection.execute("PRAGMA table_info(feedback)")
             }
+            if "role_name" not in columns:
+                connection.execute(
+                    "ALTER TABLE feedback ADD COLUMN role_name TEXT NOT NULL "
+                    "DEFAULT 'local_operator'"
+                )
             if "before_match" not in columns:
                 connection.execute("ALTER TABLE feedback ADD COLUMN before_match INTEGER")
             if "after_match" not in columns:
                 connection.execute("ALTER TABLE feedback ADD COLUMN after_match INTEGER")
             connection.execute(
-                "CREATE INDEX IF NOT EXISTS feedback_schema_created "
-                "ON feedback(schema_name, created_at)"
+                "CREATE INDEX IF NOT EXISTS feedback_role_schema_created "
+                "ON feedback(role_name, schema_name, created_at)"
             )
 
     def add(
@@ -55,50 +61,66 @@ class FeedbackStore:
         corrected: bool = False,
         before_match: bool | None = None,
         after_match: bool | None = None,
+        role_name: str = "local_operator",
     ) -> None:
         if rating not in {-1, 1}:
             raise ValueError("Feedback rating must be 1 (helpful) or -1 (not helpful).")
         if not question.strip() or not sql.strip():
             raise ValueError("Feedback requires a question and SQL.")
+        if not role_name.strip():
+            raise ValueError("Feedback role name cannot be empty.")
         self._initialize()
         with self._lock, sqlite3.connect(self.path) as connection:
             connection.execute(
                 """INSERT INTO feedback
-                   (schema_name, question, sql, rating, corrected, before_match, after_match)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                   (role_name, schema_name, question, sql, rating, corrected,
+                    before_match, after_match)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    schema_name, question.strip(), sql.strip(), rating, int(corrected),
+                    role_name.strip(), schema_name, question.strip(), sql.strip(),
+                    rating, int(corrected),
                     None if before_match is None else int(before_match),
                     None if after_match is None else int(after_match),
                 ),
             )
 
-    def examples(self, schema_name: str, limit: int = 100) -> list[FewShotExample]:
+    def examples(
+        self,
+        schema_name: str,
+        limit: int = 100,
+        role_name: str = "local_operator",
+    ) -> list[FewShotExample]:
         if not os.path.exists(self.path):
             return []
+        self._initialize()
         with self._lock, sqlite3.connect(self.path) as connection:
             rows = connection.execute(
                 """SELECT question, sql FROM feedback
-                   WHERE schema_name = ? AND rating = 1
+                   WHERE role_name = ? AND schema_name = ? AND rating = 1
                    ORDER BY corrected DESC, created_at DESC LIMIT ?""",
-                (schema_name, limit),
+                (role_name, schema_name, limit),
             ).fetchall()
         return [FewShotExample(question=row[0], sql=row[1]) for row in rows]
 
-    def stats(self, schema_name: str) -> dict[str, int | float]:
+    def stats(
+        self,
+        schema_name: str,
+        role_name: str = "local_operator",
+    ) -> dict[str, int | float]:
         if not os.path.exists(self.path):
             return {
                 "total": 0, "helpful": 0, "corrected": 0, "helpful_rate": 0.0,
                 "measured": 0, "before_accuracy": 0.0, "after_accuracy": 0.0,
             }
+        self._initialize()
         with self._lock, sqlite3.connect(self.path) as connection:
             total, positive, corrections, before_sum, before_count, after_sum, after_count = connection.execute(
                 """SELECT COUNT(*), COALESCE(SUM(rating = 1), 0),
                           COALESCE(SUM(corrected), 0),
                           COALESCE(SUM(before_match), 0), COUNT(before_match),
                           COALESCE(SUM(after_match), 0), COUNT(after_match)
-                   FROM feedback WHERE schema_name = ?""",
-                (schema_name,),
+                   FROM feedback WHERE role_name = ? AND schema_name = ?""",
+                (role_name, schema_name),
             ).fetchone()
         return {
             "total": total,

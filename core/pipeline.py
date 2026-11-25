@@ -7,6 +7,7 @@ from .retriever import BaseRetriever
 from .knowledge import DomainKnowledgeEngine, KnowledgeContext
 from .agents.classifier import QueryClassifier, QueryClassification
 from .agents.critic import SemanticCritic
+from .few_shot import FewShotExample
 
 
 from .translator import translate_query
@@ -84,6 +85,7 @@ class Pipeline:
         query_guard: Callable[[str, Schema], str] | None = None,
         result_transform: Callable[[Result, str], Result] | None = None,
         schema_override: Schema | None = None,
+        feedback_examples: list[FewShotExample] | None = None,
     ) -> PipelineResult:
         def report(stage: str, message: str) -> None:
             if on_progress:
@@ -153,6 +155,7 @@ class Pipeline:
                     feedback=feedback,
                     temperature=candidate_temperature,
                     conversation_context=conversation_context,
+                    feedback_examples=feedback_examples,
                 )
             return self.generator.generate(en_question, ddl, feedback)
 

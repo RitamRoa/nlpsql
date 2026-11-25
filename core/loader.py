@@ -271,6 +271,7 @@ def build_pipeline(
     schema_name: str = "company",
     provider: LLMProvider | None = None,
     include_feedback: bool = True,
+    feedback_role_name: str = "local_operator",
 ) -> tuple[Pipeline, DBAdapter, DomainKnowledgeEngine]:
     """Builds the complete multi-agent pipeline for a specified schema or physical DB file.
 
@@ -291,7 +292,9 @@ def build_pipeline(
     llm = provider or MockProvider()
     few_shot_examples = _get_few_shot_examples(schema_name)
     if include_feedback:
-        few_shot_examples.extend(FeedbackStore().examples(schema_name))
+        few_shot_examples.extend(
+            FeedbackStore().examples(schema_name, role_name=feedback_role_name)
+        )
     few_shot = FewShotRetriever(examples=few_shot_examples, top_k=2)
     drafter = SQLDrafter(provider=llm, few_shot_retriever=few_shot)
     retriever = SchemaRetriever(semantic_layer=semantic_layer)

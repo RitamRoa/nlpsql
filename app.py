@@ -21,7 +21,7 @@ if sys.platform == "win32":
     if hasattr(sys.stderr, "buffer"):
         sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from core.generator import SQLGenerator
 from core.providers.mock import MockProvider
@@ -42,7 +42,10 @@ DB_SCHEMA = os.environ.get("DB_SCHEMA", "company")
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST")
 if OLLAMA_HOST:
     print(f"Connecting to Ollama provider at {OLLAMA_HOST}")
-    provider = OllamaProvider(host=OLLAMA_HOST)
+    provider = OllamaProvider(
+        host=OLLAMA_HOST,
+        model=os.environ.get("OLLAMA_MODEL", "smollm2:135m"),
+    )
 elif os.path.exists(MODEL_PATH) and os.environ.get("MOCK_LLM", "0") != "1":
     print(f"Loading local GGUF model: {MODEL_PATH}")
     provider = SQLGenerator(model_path=MODEL_PATH)
@@ -59,6 +62,7 @@ pipeline, adapter, knowledge_engine = build_pipeline(
     db_path=current_db_path,
     schema_name=current_schema_name,
     provider=provider,
+    include_feedback=False,
 )
 
 # Uploaded custom schemas: {display_name: seed_sql}
@@ -68,6 +72,7 @@ connected_databases: dict[str, tuple[str, str]] = {}
 access_policy = AccessPolicy.from_environment()
 audit_log = AuditLog()
 feedback_store = FeedbackStore()
+pipeline_lock = threading.RLock()
 auth_sessions: dict[str, tuple[str, float]] = {}
 auth_sessions_lock = threading.Lock()
 write_approvals: dict[str, tuple[str, str | None, str, float]] = {}
@@ -163,6 +168,7 @@ def _build_connection_pipeline(engine: str, connection: str, query_provider):
             db_path=connection,
             schema_name="company",
             provider=query_provider,
+            include_feedback=False,
         )
     from core.adapters.relational import RelationalAdapter
     from core.agents.classifier import QueryClassifier
@@ -2759,6 +2765,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         role = access_policy.authorize_schema(self.current_role, current_schema_name)
         return access_policy.restrict_schema(adapter.get_schema(), role)
 
+    def _feedback_examples(self):
+        return feedback_store.examples(
+            current_schema_name,
+            role_name=self.current_role or "local_operator",
+        )
+
     def do_GET(self):
         global current_schema_name, current_db_path, adapter
         url_path = urllib.parse.urlparse(self.path).path
@@ -2896,7 +2908,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             })
 
         elif url_path == "/api/feedback_stats":
-            self._json(feedback_store.stats(current_schema_name))
+            self._json(feedback_store.stats(
+                current_schema_name,
+                role_name=self.current_role or "local_operator",
+            ))
 
         elif url_path == "/api/security_report":
             from core.security_redteam import run_redteam_suite
@@ -3017,22 +3032,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     before_match = _results_equivalent(original_result, reference_result)
                 except Exception:
                     before_match = False
-                retriever = getattr(
-                    getattr(pipeline, "generator", None), "few_shot_retriever", None
-                )
-                if retriever:
-                    retriever.add_example(question, corrected_sql)
-                learned_result = pipeline.ask(
-                    question,
-                    query_guard=lambda candidate, _schema: access_policy.enforce_query(
-                        candidate, visible_schema, role, adapter.dialect(),
-                        full_schema=_schema,
-                    ),
-                    result_transform=lambda result, candidate: access_policy.mask_result(
-                        result, role, candidate
-                    ),
-                    schema_override=visible_schema,
-                )
+                from core.few_shot import FewShotExample
+                scoped_examples = self._feedback_examples()
+                scoped_examples.append(FewShotExample(question, corrected_sql))
+                with pipeline_lock:
+                    learned_result = pipeline.ask(
+                        question,
+                        query_guard=lambda candidate, _schema: access_policy.enforce_query(
+                            candidate, visible_schema, role, adapter.dialect(),
+                            full_schema=_schema,
+                        ),
+                        result_transform=lambda result, candidate: access_policy.mask_result(
+                            result, role, candidate
+                        ),
+                        schema_override=visible_schema,
+                        feedback_examples=scoped_examples,
+                    )
                 after_match = (
                     learned_result.result is not None
                     and _results_equivalent(learned_result.result, reference_result)
@@ -3040,14 +3055,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 feedback_store.add(
                     current_schema_name, question, corrected_sql, 1, corrected=True,
                     before_match=before_match, after_match=after_match,
+                    role_name=self.current_role or "local_operator",
                 )
             else:
-                feedback_store.add(current_schema_name, question, sql, rating)
+                feedback_store.add(
+                    current_schema_name, question, sql, rating,
+                    role_name=self.current_role or "local_operator",
+                )
             audit_log.record(
                 self.current_role, current_schema_name, "feedback", "accepted",
                 question=question, sql=corrected_sql or sql,
             )
-            self._json({"status": "ok", "stats": feedback_store.stats(current_schema_name)})
+            self._json({
+                "status": "ok",
+                "stats": feedback_store.stats(
+                    current_schema_name,
+                    role_name=self.current_role or "local_operator",
+                ),
+            })
             return
 
         if url_path == "/api/transpile":
@@ -3259,6 +3284,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 new_pipeline, new_adapter, new_knowledge = build_pipeline(
                     db_engine=schema_engine, db_path=new_path,
                     schema_name=new_schema, provider=provider,
+                    include_feedback=False,
                 )
                 old_adapter = adapter
                 pipeline, adapter, knowledge_engine = new_pipeline, new_adapter, new_knowledge
@@ -3506,22 +3532,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         client_connected = False
                         print(f"Query progress client disconnected: {error}", file=sys.stderr)
 
-                out = pipeline.ask(
-                    prompt,
-                    on_progress=send_progress,
-                    conversation_context=conversation_context or None,
-                    query_guard=query_guard,
-                    result_transform=result_transform,
-                    schema_override=visible_schema,
-                )
+                with pipeline_lock:
+                    out = pipeline.ask(
+                        prompt,
+                        on_progress=send_progress,
+                        conversation_context=conversation_context or None,
+                        query_guard=query_guard,
+                        result_transform=result_transform,
+                        schema_override=visible_schema,
+                        feedback_examples=self._feedback_examples(),
+                    )
             else:
-                out = pipeline.ask(
-                    prompt,
-                    conversation_context=conversation_context or None,
-                    query_guard=query_guard,
-                    result_transform=result_transform,
-                    schema_override=visible_schema,
-                )
+                with pipeline_lock:
+                    out = pipeline.ask(
+                        prompt,
+                        conversation_context=conversation_context or None,
+                        query_guard=query_guard,
+                        result_transform=result_transform,
+                        schema_override=visible_schema,
+                        feedback_examples=self._feedback_examples(),
+                    )
             inf_t = sum(v for k, v in out.timings.items() if k.startswith("generate"))
             q_t   = sum(v for k, v in out.timings.items() if k.startswith("execute"))
             audit_log.record(
@@ -3660,10 +3690,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         pass  # Suppress default access log
 
 
-def run_server(port: int = 8000):
-    httpd = HTTPServer(("127.0.0.1", port), DashboardHandler)
+def run_server(port: int = 8000, host: str | None = None):
+    host = host or os.environ.get("NLPSQL_HOST", "127.0.0.1")
+    httpd = ThreadingHTTPServer((host, port), DashboardHandler)
     print(f"\n{'='*52}")
-    print(f"  NLP-SQL  ->  http://localhost:{port} (local-only)")
+    display_host = "localhost" if host == "127.0.0.1" else host
+    print(f"  NLP-SQL  ->  http://{display_host}:{port}")
     print(f"  Built-in schemas : {list_available_schemas()}")
     print(f"  Active schema    : {current_schema_name}")
     print(f"{'='*52}\n")
@@ -3671,6 +3703,8 @@ def run_server(port: int = 8000):
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\nStopping server...")
+    finally:
+        httpd.server_close()
 
 
 if __name__ == "__main__":

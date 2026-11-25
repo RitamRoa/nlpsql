@@ -33,6 +33,8 @@ CONFIGS: dict[str, dict[str, Any]] = {
     "no_schema_pruning": {"schema_pruning": False},
     "no_value_linking": {"value_linking": False},
     "no_confidence": {"confidence_samples": 1},
+    # Abstain unless every sampled candidate agrees: trades coverage for accuracy.
+    "strict_abstain": {"confidence_threshold": 1.0},
     "baseline_minimal": {
         "max_repairs": 0,
         "few_shot": False,
@@ -104,6 +106,8 @@ def build_variant(domain: str, provider, flags: dict[str, Any]):
     )
     if "max_repairs" in flags:
         pipeline.max_repairs = flags["max_repairs"]
+    if "confidence_threshold" in flags:
+        pipeline.confidence_threshold = flags["confidence_threshold"]
     if "confidence_samples" in flags:
         pipeline.confidence_samples = flags["confidence_samples"]
     if flags.get("few_shot") is False:

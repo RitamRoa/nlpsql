@@ -22,6 +22,22 @@ python run_heldout_benchmark.py --out results.json --markdown results.md
 
 Output: execution accuracy with a 95% interval, valid-SQL rate, coverage and selective accuracy, a confidence-vs-accuracy table, and per-difficulty and per-schema breakdowns. `run_benchmark.py` is a 5-question smoke test whose questions overlap the few-shot examples; do not quote it as accuracy.
 
+### Results (llama3.2 via Ollama, 80 questions, 25 Nov 2026)
+
+These are one run each of a sampled pipeline; repeated runs moved by a few points, so read differences under about 5 points as noise. They were measured before the SQL-extraction fix described below and should be re-run.
+
+| Config | EX % | 95% CI | Valid SQL % |
+|---|---|---|---|
+| full | 82.5 | 72.7-89.3 | 91.2 |
+| no_schema_pruning | 78.8 | 68.6-86.3 | 93.8 |
+| no_confidence | 80.0 | 70.0-87.3 | 91.2 |
+| baseline_minimal | 66.2 | 55.4-75.7 | 83.8 |
+
+- The full pipeline beats the bare model by about 16 points (19 questions only `full` got right, 6 only the baseline got right).
+- Schema pruning and confidence sampling add little here; their differences are within noise.
+- Answers whose sampled candidates all agreed (confidence 1.0) were right 95.1% of the time (58 of 61); answers with confidence 0.667 were right 66.7% (8 of 12). Abstaining below full agreement (`strict_abstain` config) would answer 61 of 80 questions at that accuracy.
+- Of the 14 wrong answers in `full`, 5 were repair attempts where the model returned an explanation instead of SQL, 3 returned correct logic with an extra column, and the rest were wrong joins, tables or date arithmetic.
+
 Tests: `pytest` (set `MOCK_LLM=1` to avoid loading a model).
 
 ## Project files

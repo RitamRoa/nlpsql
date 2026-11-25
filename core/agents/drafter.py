@@ -29,21 +29,49 @@ def sanitize_dialect_syntax(sql: str) -> str:
     return sql
 
 
+_FENCE = re.compile(r"```(?:sql)?\s*(.*?)(?:```|\Z)", re.IGNORECASE | re.DOTALL)
+_SQL_START = re.compile(
+    r"\b(?:with\s+(?:recursive\s+)?[\w\"`]+\s*(?:\([^)]*\))?\s+as\s*\(|select\b)",
+    re.IGNORECASE,
+)
+
+
+def _first_statement(text: str) -> str:
+    """Text up to the first semicolon that is not inside a quoted string."""
+    quote = None
+    for index, char in enumerate(text):
+        if quote:
+            if char == quote:
+                quote = None
+        elif char in ("'", '"'):
+            quote = char
+        elif char == ";":
+            return text[: index + 1]
+    return text
+
+
 def clean_sql(text: str) -> str:
-    """Extract clean SQL from model output, stripping markdown code fences and dialect quirks."""
-    text = re.sub(r"```(?:sql)?", "", text)
-    text = text.replace("```", "").strip()
-    # Match complete SELECT statement ending with semicolon if present
-    m = re.search(r"(SELECT\s+[^;]+;)", text, re.IGNORECASE)
-    if m:
-        sql = m.group(1).strip()
+    """Extract SQL from model output.
+
+    Chat models often wrap the query in a code fence or put an explanation before
+    it ("To fix the error, ... Here is the corrected SQL: ..."). Take the fenced
+    block when there is one, otherwise start at the first SELECT/WITH that begins a
+    line (falling back to the first one anywhere), and stop at the first real ';'.
+    """
+    fenced = [block.strip() for block in _FENCE.findall(text) if block.strip()]
+    candidate = fenced[0] if fenced else text.strip()
+    starts = [
+        m for m in _SQL_START.finditer(candidate)
+        if candidate[: m.start()].strip() == "" or candidate[m.start() - 1] in "\n\r"
+    ] or list(_SQL_START.finditer(candidate))
+    if starts:
+        sql = _first_statement(candidate[starts[0].start():]).strip()
     else:
-        # Otherwise strip leading comments
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        sql_lines = [l for l in lines if not l.startswith(("--", "//", "#"))]
-        sql = " ".join(sql_lines).strip()
-        if sql and not sql.endswith(";"):
-            sql += ";"
+        # No query found: keep the old behaviour so the validator reports the problem.
+        lines = [line.strip() for line in candidate.splitlines() if line.strip()]
+        sql = " ".join(l for l in lines if not l.startswith(("--", "//", "#"))).strip()
+    if sql and not sql.endswith(";"):
+        sql += ";"
     return sanitize_dialect_syntax(sql)
 
 
@@ -119,7 +147,7 @@ class SQLDrafter:
             )
             raw_text = self.provider.generate_text(
                 prompt=full_prompt,
-                stop=["<|im_end|>", ";\n\n", "```"],
+                stop=["<|im_end|>", ";\n\n"],
                 max_tokens=150,
                 temperature=temperature,
             )
@@ -160,8 +188,11 @@ class SQLDrafter:
             hints.append(
                 "Query involves aggregation (COUNT, SUM, AVG) with appropriate GROUP BY."
             )
-        if hints:
-            prompt_parts.extend(["", "### Guidelines:"] + [f"- {h}" for h in hints])
+        hints.append(
+            "Return only the columns the question asks for, in that order; do not add "
+            "extra columns such as totals or ids that were not requested."
+        )
+        prompt_parts.extend(["", "### Guidelines:"] + [f"- {h}" for h in hints])
 
         prompt_parts.extend(["", f"### Question: {question}"])
 
@@ -171,7 +202,7 @@ class SQLDrafter:
                     "",
                     "### Feedback from Previous Attempt:",
                     f"-- {feedback}",
-                    "-- Fix the error and produce the corrected SQL.",
+                    "-- Fix the error. Respond with only the corrected SQL query and no explanation.",
                 ]
             )
 
@@ -180,7 +211,7 @@ class SQLDrafter:
 
         raw_text = self.provider.generate_text(
             prompt=full_prompt,
-            stop=["<|im_end|>", ";\n\n", "```"],
+            stop=["<|im_end|>", ";\n\n"],
             max_tokens=150,
             temperature=temperature,
         )

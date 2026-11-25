@@ -181,6 +181,10 @@ def test_config_flags_take_effect():
     assert pipeline.generator.few_shot_retriever.examples == []
     adapter.close()
 
+    pipeline, adapter = build_variant("company", provider, CONFIGS["strict_abstain"])
+    assert pipeline.confidence_threshold == 1.0 and pipeline.confidence_samples == 3
+    adapter.close()
+
     pipeline, adapter = build_variant("company", provider, CONFIGS["no_semantic_layer"])
     assert pipeline.retriever.semantic_layer.tables == {}
     assert pipeline.knowledge_engine is not None

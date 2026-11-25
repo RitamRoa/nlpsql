@@ -133,7 +133,7 @@ Users can dynamically import external data and immediately query it in natural l
 
 **Access control** ([`core/security.py`](core/security.py)): per-role table/column allow-lists, mandatory row filters, masked columns and an audit log. A CTE that reuses the name of a real table is rejected, because the engine would resolve the inner reference to the real table and skip the role's row filter. Regression tests for this are in `tests/test_rbac_regressions.py`, run on SQLite and DuckDB, and `core/security_redteam.py` exercises the same cases.
 
-Known limits: the feedback store is not scoped per role, and the web server is single-threaded. Treat the access layer as defence in depth and put real permissions on the database account too.
+Feedback is isolated by role and schema; legacy unscoped rows migrate to the `local_operator` role. The HTTP server uses a thread per request, while model generation through the shared pipeline is serialized. Treat the access layer as defence in depth and put real permissions on the database account too.
 
 ---
 

@@ -8,7 +8,7 @@ A Python web app that turns natural-language questions into SQL with a small loc
 - The bundled databases are small demos. Execution match on them is weaker evidence than on Spider or BIRD.
 - Non-English questions use an offline word list by default. Online translation sends the question to a third-party API and is off unless `NLPSQL_ONLINE_TRANSLATION=1`.
 - The access-control layer is defence in depth. Also give the database account least-privilege permissions.
-- The HTTP server is single-threaded and meant for local use, not for exposing to a network.
+- The HTTP server handles connections with a thread per request and binds to localhost by default. Model generation is serialized around the shared pipeline. Docker binds inside the container; expose it only to trusted users and configure access controls before doing so.
 
 ## Benchmark
 
@@ -74,6 +74,17 @@ python app.py
 
 Then open [http://localhost:8000](http://localhost:8000) in a browser. The first startup loads the local model into memory. Press `Ctrl+C` in the terminal to stop the server.
 
+### Docker
+
+The image starts in mock mode unless you configure a real provider. Build and run it locally:
+
+```powershell
+docker build -t nlpsql .
+docker run --rm -p 8000:8000 nlpsql
+```
+
+The container listens on port 8000. The Docker image sets `NLPSQL_HOST=0.0.0.0` so Docker port forwarding works; keep the published port on a trusted local network. To use a GGUF model, mount the ignored model file at `/app/SmolLM2-135M-text-to-sql.Q8_0.gguf`, install a compatible `llama-cpp-python` build in the image, and set `MOCK_LLM=0`. Ollama can instead be selected with `OLLAMA_HOST` and `OLLAMA_MODEL`; ensure the container can reach that host.
+
 To run the benchmark instead, use `python run_heldout_benchmark.py` (see Benchmark above).
 
 If port 8000 is already in use, stop the other process before starting this app; the port is currently fixed in `app.py`.
@@ -111,7 +122,7 @@ Omit `--force` to create a semantic file only when one does not already exist. R
 - Follow-up prompts can use the previous SQL and schema as conversation context. The dashboard also provides a deterministic SQL explanation/column trace, a narration computed from returned rows, and an `EXPLAIN` plan with scan/join warnings.
 - SQL can be transpiled to SQLite, PostgreSQL, MySQL, or DuckDB. Transpilation does not execute the translated query.
 - The model arena compares up to three configured providers. To report execution accuracy, supply a reference SQL query; without one, the leaderboard reports execution success only. This is not a held-out benchmark.
-- Feedback is stored per schema locally in `%LOCALAPPDATA%\\NLPSQL\\feedback.sqlite3` (or under the user's home directory when `LOCALAPPDATA` is unset). Helpful examples are reused in generation. Corrected feedback replays the question and records same-question before/after result agreement; it is not a held-out accuracy estimate. Feedback records include the question and corrected SQL, so protect this local file.
+- Feedback is stored per role and schema locally in `%LOCALAPPDATA%\\NLPSQL\\feedback.sqlite3` (or under the user's home directory when `LOCALAPPDATA` is unset). Helpful examples are added only to requests for that same role and schema. Older unscoped entries are assigned to `local_operator` during migration. Corrected feedback replays the question and records same-question before/after result agreement; it is not a held-out accuracy estimate. Feedback records include the question and corrected SQL, so protect this local file.
 
 ## Access controls and safe writes
 
@@ -160,7 +171,7 @@ Configure the MCP client to launch that command with the project directory as it
 
 ## Model providers and arena
 
-The default provider selection prefers a local GGUF model when present, then an explicitly configured Ollama host, then an API provider when an API key is configured; otherwise it uses the mock provider. Ollama uses `OLLAMA_HOST` and `OLLAMA_MODEL`. The API provider uses `LLM_API_KEY` or `OPENAI_API_KEY`, with optional `LLM_API_MODEL` and `LLM_API_ENDPOINT`.
+The default provider selection prefers a local GGUF model when present, then an explicitly configured Ollama host, then an API provider when an API key is configured; otherwise it uses the mock provider. The dashboard server currently supports local GGUF and Ollama providers; the standalone benchmark provider factory also supports HTTP API providers. Ollama uses `OLLAMA_HOST` and `OLLAMA_MODEL`. The API provider uses `LLM_API_KEY` or `OPENAI_API_KEY`, with optional `LLM_API_MODEL` and `LLM_API_ENDPOINT`.
 
 The arena can use up to three providers defined by `NLPSQL_ARENA_MODELS` as a JSON array. For example:
 
@@ -192,4 +203,4 @@ The response includes the generated SQL, result columns and rows, any database e
 
 ## License
 
-MIT, see `LICENSE`.
+MIT License; the holder is listed as `RitamRoa` in `LICENSE` (matching the repository owner). See `LICENSE`. Confirm the holder is the rights owner before redistribution.

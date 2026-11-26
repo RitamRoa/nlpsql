@@ -10,6 +10,15 @@ A Python web app that turns natural-language questions into SQL with a small loc
 - The access-control layer is defence in depth. Also give the database account least-privilege permissions.
 - The HTTP server handles connections with a thread per request and binds to localhost by default. Model generation is serialized around the shared pipeline. Docker binds inside the container; expose it only to trusted users and configure access controls before doing so.
 
+## Web UI
+
+`python app.py` serves a single-page studio (sources in `ui/`: `index.html`, `studio.css`, `studio.js`; no build step).
+
+- **Verification panel** beside every answer: confidence, whether the query was validated read-only, which tables were used, and what access control masked or filtered. Low-confidence answers are withheld, with the reason shown.
+- **Live pipeline stepper** (server-sent events), clarification prompts, follow-up suggestions, and a Table / Chart / SQL / Explain / Review tab set.
+- Light and dark themes, keyboard shortcuts (`?` lists them), arrow-key tab navigation, a mobile drawer, reduced-motion and print styles.
+- The page is loaded once at import, so restart the server after editing `ui/`.
+
 ## Benchmark
 
 `eval/heldout_benchmark.json` holds 80 questions with gold SQL (4 schemas x 20, easy/medium/hard). The harness refuses to run if a question or its gold SQL appears in the few-shot examples or semantic-layer files, builds pipelines without saved feedback, and runs ablations that each switch off one component.

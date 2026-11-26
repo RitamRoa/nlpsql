@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NLPSQL Studio</title>
+    <meta name="description" content="Ask questions about your data in plain language. Every answer is cross-checked and runs on a read-only connection.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+/*__CSS__*/
+    </style>
+</head>
+<body>
+<a class="skip-link" href="#prompt">Skip to the question box</a>
+
+<header class="topbar">
+    <button class="btn icon-btn rail-toggle" type="button" id="railToggle" aria-label="Show data panel" aria-controls="rail" aria-expanded="false" onclick="toggleRail()">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>
+    </button>
+    <div class="brand">
+        <div class="brand-mark" aria-hidden="true">NS</div>
+        <h1>NLPSQL Studio</h1>
+    </div>
+    <div class="dataset-switch" id="schemaBar">
+        <span>Dataset</span>
+        <div class="schema-tabs" id="schemaTabs" role="group" aria-label="Dataset"></div>
+    </div>
+    <div class="topbar-spacer"></div>
+    <span class="status-dot" id="statusDot" role="status">Connected</span>
+    <div class="topbar-actions">
+        <button class="btn upload-btn" type="button" onclick="openUpload()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5M5 20h14"/></svg>
+            <span class="label">Upload data</span>
+        </button>
+        <button class="btn hide-sm" type="button" onclick="connectDatabase()">Connect database</button>
+        <button class="btn" type="button" onclick="openCommandPalette()" aria-label="Open commands">Commands <kbd class="hide-sm">Ctrl K</kbd></button>
+        <button class="btn icon-btn theme-btn" id="themeBtn" type="button" onclick="toggleTheme()" aria-label="Switch theme" title="Switch theme">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></svg>
+        </button>
+    </div>
+</header>
+
+<div class="workbench">
+    <aside class="rail" id="rail" aria-label="Data and history">
+        <div class="rail-tabs" role="tablist" aria-label="Side panel">
+            <button class="rail-tab" role="tab" id="railtab-schema" aria-selected="true" aria-controls="railpane-schema" onclick="selectRailTab('schema')">Schema</button>
+            <button class="rail-tab" role="tab" id="railtab-history" aria-selected="false" aria-controls="railpane-history" onclick="selectRailTab('history')">History</button>
+            <button class="rail-tab" role="tab" id="railtab-pins" aria-selected="false" aria-controls="railpane-pins" onclick="selectRailTab('pins')">Pinned</button>
+        </div>
+        <div class="rail-pane" id="railpane-schema" role="tabpanel" aria-labelledby="railtab-schema">
+            <div id="schemaPanel">
+                <div class="panel-hdr"><span>Tables</span><span class="db-badge" id="dbBadge">SQLite</span></div>
+                <div id="schemaContent"><div class="loading-msg">Loading tables…</div></div>
+            </div>
+            <div class="panel-hdr"><span>Relationships</span></div>
+            <button class="tool-btn" type="button" onclick="showErDiagram()">Show ER diagram</button>
+            <div class="er-canvas" id="erCanvas" hidden></div>
+        </div>
+        <div class="rail-pane" id="railpane-history" role="tabpanel" aria-labelledby="railtab-history" hidden>
+            <div class="panel-hdr"><span>Recent questions</span><button class="tool-btn" type="button" onclick="clearHistory()">Clear</button></div>
+            <div id="historyOut"></div>
+            <div class="panel-hdr"><span>Favorites</span></div>
+            <div id="favoritesOut"></div>
+        </div>
+        <div class="rail-pane" id="railpane-pins" role="tabpanel" aria-labelledby="railtab-pins" hidden>
+            <div class="panel-hdr"><span>Pinned results</span></div>
+            <div id="pinsOut"></div>
+        </div>
+    </aside>
+
+    <main class="main" id="main">
+        <div class="main-inner" id="mainInner">
+            <section class="ask" aria-labelledby="askTitle">
+                <h2 id="askTitle">Ask your data a question</h2>
+                <p class="ask-sub">Describe what you want in plain language. NLPSQL writes the SQL, checks it, and shows you both the answer and how it was verified.</p>
+                <div class="inp-wrap">
+                    <input type="text" id="prompt" autocomplete="off" list="queryHints" enterkeyhint="go"
+                        aria-label="Your question" placeholder="Which departments have the highest average salary?"
+                        onkeydown="if(event.key==='Enter'&&!event.isComposing){event.preventDefault();runQuery();}">
+                    <datalist id="queryHints"></datalist>
+                    <div class="query-tools">
+                        <button type="button" id="voiceBtn" onclick="startVoiceInput()" title="Ask by voice" aria-label="Ask by voice">
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+                        </button>
+                        <button type="button" onclick="speakSummary()" title="Read the answer aloud" aria-label="Read the answer aloud">
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4zM16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/></svg>
+                        </button>
+                    </div>
+                    <button id="runBtn" type="button" onclick="runQuery()">
+                        <span id="btnTxt">Ask</span>
+                        <div class="spin" id="spin"></div>
+                    </button>
+                </div>
+                <div class="ask-meta">
+                    <span>Press <kbd>Enter</kbd> to ask, <kbd>/</kbd> to jump here</span>
+                    <label class="chart-heading" for="speechLanguage">Voice language
+                        <select id="speechLanguage" class="chart-select">
+                            <option value="en-IN">English (India)</option>
+                            <option value="hi-IN">Hindi</option>
+                            <option value="kn-IN">Kannada</option>
+                        </select>
+                    </label>
+                </div>
+            </section>
+
+            <details class="ex-details" id="exDetails" open>
+                <summary id="exTitle">Try one of these</summary>
+                <div class="examples" id="suggestions"></div>
+            </details>
+
+            <div class="explain-card clarify" id="clarificationPanel" role="alert" hidden></div>
+
+            <div class="stepper" id="stepper" role="status" aria-live="polite"></div>
+            <div class="progress-msg" id="progressMsg" role="status" aria-live="polite"></div>
+
+            <section class="how" id="emptyState" aria-label="How answers are checked">
+                <div><h3>Several drafts, one answer</h3><p>The model writes a few candidate queries. An answer is shown as verified only when their results agree.</p></div>
+                <div><h3>Read-only and validated</h3><p>Every query is checked against your schema and runs on a read-only connection. Writes need an explicit preview and approval.</p></div>
+                <div><h3>It tells you when it is unsure</h3><p>If the candidates disagree, the answer is withheld and you see why, instead of a confident guess.</p></div>
+            </section>
+
+            <section class="results" id="results" aria-label="Result">
+                <div class="banner" id="transBanner" style="display:none"></div>
+
+                <div class="answer" id="answerRow">
+                    <div class="answer-main">
+                        <div class="answer-q" id="answerQuestion"></div>
+                        <p class="result-summary" id="summaryOut" aria-live="polite"></p>
+                        <div class="followups" id="followups"></div>
+                    </div>
+                    <aside class="trust" id="trustPanel" aria-label="How this answer was checked">
+                        <div class="trust-head"><strong>Verification</strong><span class="verdict idle" id="trustVerdict">Waiting</span></div>
+                        <div class="trust-body" id="trustBody"></div>
+                        <div class="trust-foot">
+                            <span>Model <b id="tInf">-</b></span>
+                            <span>Query <b id="tQ">-</b></span>
+                            <span>Attempts <b id="tAtt">-</b></span>
+                        </div>
+                    </aside>
+                </div>
+                <div id="qualityBadge" role="status"></div>
+                <div class="stats"></div>
+
+                <div>
+                    <div class="tabs" role="tablist" aria-label="Result views">
+                        <button class="tab" role="tab" id="tab-view-table" aria-selected="true" aria-controls="pane-table" onclick="selectResultTab('table')">Table <span class="count" id="rowCount">0</span></button>
+                        <button class="tab" role="tab" id="tab-view-chart" aria-selected="false" aria-controls="pane-chart" onclick="selectResultTab('chart')">Chart</button>
+                        <button class="tab" role="tab" id="tab-view-sql" aria-selected="false" aria-controls="pane-sql" onclick="selectResultTab('sql')">SQL</button>
+                        <button class="tab" role="tab" id="tab-view-explain" aria-selected="false" aria-controls="pane-explain" onclick="selectResultTab('explain')">Explain</button>
+                        <button class="tab" role="tab" id="tab-view-tools" aria-selected="false" aria-controls="pane-tools" onclick="selectResultTab('tools')">Review</button>
+                    </div>
+
+                    <div class="pane" id="pane-table" role="tabpanel" aria-labelledby="tab-view-table">
+                        <div class="result-toolbar" id="resultToolbar">
+                            <div class="toolbar-group">
+                                <button class="tool-btn" type="button" onclick="exportResults('csv')">CSV</button>
+                                <button class="tool-btn" type="button" onclick="exportResults('excel')">Excel</button>
+                                <button class="tool-btn" type="button" onclick="exportResults('json')">JSON</button>
+                                <button class="tool-btn" type="button" onclick="printReport()">PDF report</button>
+                            </div>
+                            <div class="toolbar-group">
+                                <button class="tool-btn" type="button" onclick="pinResults()">Pin result</button>
+                                <button class="tool-btn" type="button" onclick="shareQuery()">Copy link</button>
+                            </div>
+                        </div>
+                        <div id="tableOut"></div>
+                    </div>
+
+                    <div class="pane" id="pane-chart" role="tabpanel" aria-labelledby="tab-view-chart" hidden>
+                        <div class="result-toolbar">
+                            <label class="chart-heading" for="chartType">Chart type
+                                <select class="chart-select" id="chartType" onchange="renderChart()">
+                                    <option value="auto">Recommended</option>
+                                    <option value="bar">Bar</option>
+                                    <option value="line">Line</option>
+                                    <option value="pie">Pie</option>
+                                    <option value="scatter">Scatter</option>
+                                    <option value="map">Geo map</option>
+                                </select>
+                            </label>
+                            <div class="toolbar-group">
+                                <input class="table-control" id="chartEdit" aria-label="Describe a chart change" placeholder="e.g. line chart, sort descending" onkeydown="if(event.key==='Enter')handleChartEdit(event)">
+                                <button class="tool-btn" type="button" onclick="handleChartEdit({currentTarget:document.getElementById('chartEdit')})">Apply</button>
+                            </div>
+                        </div>
+                        <div class="chart-panel" id="chartPanel">
+                            <div class="chart-canvas" id="chartOut"></div>
+                        </div>
+                    </div>
+
+                    <div class="pane" id="pane-sql" role="tabpanel" aria-labelledby="tab-view-sql" hidden>
+                        <div class="diff-panel" id="diffPanel"></div>
+                        <div class="sql-box">
+                            <div class="sql-box-head">
+                                <label for="sqlOut">SQL (edit it, then run it again)</label>
+                                <button class="tool-btn" type="button" onclick="copySql()">Copy SQL</button>
+                            </div>
+                            <div class="sql-editor-wrap"><pre id="sqlHighlight" class="sql-highlight" aria-hidden="true"></pre><textarea id="sqlOut" class="sql-editor" spellcheck="false" oninput="updateSqlHighlight()" onscroll="syncSqlHighlight()"></textarea></div>
+                            <div class="sql-actions">
+                                <span class="sql-hint">Only SELECT statements run directly.</span>
+                                <button class="tool-btn" type="button" onclick="previewWrite()">Preview a change</button>
+                                <button class="tool-btn primary" type="button" onclick="runEditedSql()">Run this SQL</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="pane" id="pane-explain" role="tabpanel" aria-labelledby="tab-view-explain" hidden>
+                        <div class="explain">
+                            <div class="explain-card" id="featurePanel"></div>
+                            <div class="explain-card" id="candidatesCard" hidden>
+                                <h3>Candidate queries the model wrote</h3>
+                                <div id="candidatesOut"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="pane" id="pane-tools" role="tabpanel" aria-labelledby="tab-view-tools" hidden>
+                        <div class="tools-grid">
+                            <div class="tool-card">
+                                <h3>Was this right?</h3>
+                                <p>Your rating is saved on this machine. A corrected query is used as an example for similar questions.</p>
+                                <div class="toolbar-group">
+                                    <button class="tool-btn" type="button" onclick="submitFeedback(1)">Helpful</button>
+                                    <button class="tool-btn" type="button" onclick="submitFeedback(-1)">Not helpful</button>
+                                    <button class="tool-btn" type="button" onclick="saveCorrection()">Save corrected SQL</button>
+                                </div>
+                                <div id="feedbackStats"></div>
+                            </div>
+                            <div class="tool-card">
+                                <h3>Compare models</h3>
+                                <p>Run the same question through the configured models. The question and visible schema are sent to each one.</p>
+                                <div class="toolbar-group"><button class="tool-btn" type="button" onclick="runModelArena()">Open model arena</button></div>
+                            </div>
+                            <div class="tool-card">
+                                <h3>Translate the SQL</h3>
+                                <p>Rewrite this query for another database.</p>
+                                <div class="toolbar-group">
+                                    <select id="targetDialect" class="chart-select" aria-label="Target SQL dialect">
+                                        <option value="postgres">PostgreSQL</option>
+                                        <option value="mysql">MySQL</option>
+                                        <option value="duckdb">DuckDB</option>
+                                        <option value="sqlite">SQLite</option>
+                                    </select>
+                                    <button class="tool-btn" type="button" onclick="transpileCurrentSql()">Translate</button>
+                                </div>
+                            </div>
+                            <div class="tool-card">
+                                <h3>Security checks</h3>
+                                <p>Run attack-style queries against the validator and access policy and see which were blocked.</p>
+                                <div class="toolbar-group"><button class="tool-btn" type="button" onclick="showSecurityReport()">Run security checks</button></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <div class="explain-card" id="samplePanel" hidden></div>
+        </div>
+    </main>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<div class="command-overlay" id="commandOverlay" onclick="if(event.target===this)closeCommandPalette()">
+    <div class="command-box" role="dialog" aria-modal="true" aria-label="Commands">
+        <input id="commandSearch" type="search" placeholder="Type a command" aria-label="Search commands" oninput="filterCommands(this.value)">
+        <div class="command-list">
+            <button type="button" onclick="closeCommandPalette();document.getElementById('prompt').focus()">Ask a question <kbd>/</kbd></button>
+            <button type="button" onclick="closeCommandPalette();runQuery()">Run the current question <kbd>Enter</kbd></button>
+            <button type="button" onclick="closeCommandPalette();openUpload()">Upload a dataset</button>
+            <button type="button" onclick="closeCommandPalette();connectDatabase()">Connect a database</button>
+            <button type="button" onclick="closeCommandPalette();showErDiagram()">Show ER diagram</button>
+            <button type="button" onclick="closeCommandPalette();selectRailTab('history')">Show history</button>
+            <button type="button" onclick="closeCommandPalette();startVoiceInput()">Ask by voice</button>
+            <button type="button" onclick="closeCommandPalette();toggleTheme()">Switch theme</button>
+            <button type="button" onclick="closeCommandPalette();openShortcuts()">Keyboard shortcuts</button>
+        </div>
+    </div>
+</div>
+
+<div class="overlay" id="shortcutsOverlay" onclick="if(event.target===this)closeShortcuts()">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="scTitle">
+        <div class="modal-hdr"><h2 id="scTitle">Keyboard shortcuts</h2><button class="close-btn" type="button" onclick="closeShortcuts()" aria-label="Close">✕</button></div>
+        <div class="shortcuts">
+            <kbd>/</kbd><span>Jump to the question box</span>
+            <kbd>Enter</kbd><span>Ask the question</span>
+            <kbd>Ctrl K</kbd><span>Open commands</span>
+            <kbd>?</kbd><span>Show this list</span>
+            <kbd>Esc</kbd><span>Close a dialog or the side panel</span>
+        </div>
+    </div>
+</div>
+
+<!-- Upload Modal -->
+<div class="overlay" id="overlay" onclick="overlayClick(event)">
+    <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="uploadTitle">
+        <div class="modal-hdr">
+            <h2 id="uploadTitle">Upload your own data</h2>
+            <button class="close-btn" type="button" onclick="closeUpload()" aria-label="Close">✕</button>
+        </div>
+        <p style="color:var(--ink-2);font-size:.9rem;line-height:1.55;">
+            Add a schema or data file. It is loaded into a temporary in-memory database and appears as a new dataset you can query right away.
+        </p>
+        <div class="drop-zone" id="dropZone"
+             ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event)">
+            <input type="file" id="fileInput" accept=".sql,.csv,.json,.pdf,.png,.jpg,.jpeg" multiple
+                   onchange="onFileSelect(event)" aria-label="Choose files to upload">
+            <div class="drop-icon">📂</div>
+            <div class="drop-title">Drop a file here, or click to browse</div>
+            <div class="drop-sub">Nothing leaves this machine</div>
+            <div class="drop-types">
+                <span class="type-chip">.sql</span>
+                <span class="type-chip">.csv</span>
+                <span class="type-chip">.json</span>
+                <span class="type-chip">.pdf</span>
+                <span class="type-chip">several CSV or JSON files</span>
+                <span class="type-chip">.png / .jpg (OCR)</span>
+            </div>
+        </div>
+        <div class="file-preview" id="filePreview">
+            <span class="file-icon" id="fileIcon">📄</span>
+            <div class="file-info">
+                <div class="file-name" id="fileName">—</div>
+                <div class="file-size" id="fileSize">—</div>
+            </div>
+            <button class="file-clear" type="button" onclick="clearFile()" title="Remove file" aria-label="Remove file">✕</button>
+        </div>
+        <div class="upload-status" id="uploadStatus"></div>
+        <div class="upload-preview" id="uploadPreview"></div>
+        <div class="modal-actions">
+            <button class="btn-secondary" type="button" onclick="closeUpload()">Cancel</button>
+            <button class="btn-primary" type="button" id="uploadBtn" onclick="doUpload()" disabled>Import</button>
+        </div>
+    </div>
+</div>
+
+<script>
+/*__JS__*/
+</script>
+</body>
+</html>
